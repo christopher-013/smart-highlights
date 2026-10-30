@@ -1,0 +1,19 @@
+__pycache__/
+*.pyc
+.venv/
+# personal / secret files never go in the repo
+client_secret*.json
+youtube_token*.json
+anthropic_key.txt
+gc_cookies.txt
+browser_profile/
+downloads/
+highlights/
+descriptions/
+games.json
+uploaded.json
+team.json
+*.mp4
+*.lock
+server/data/
+.env

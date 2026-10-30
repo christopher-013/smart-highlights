@@ -21,10 +21,13 @@ import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent
-sys.path.insert(0, str(ROOT))
+CODE_DIR = Path(__file__).resolve().parent
+sys.path.insert(0, str(CODE_DIR))
 import gc_to_youtube as gc  # noqa: E402
+import sh_config  # noqa: E402
 import smart_cut  # noqa: E402
+
+ROOT = gc.BASE                       # this folder, or SMART_HIGHLIGHTS_WORKDIR when set
 
 # ---------------------------------------------------------------- settings
 PLAYER_ID = "YOUR_PLAYER_ID"                     # from https://web.gc.com/teams/<team>/<slug>/players/<PLAYER_ID>
@@ -56,6 +59,8 @@ CAPTION_ALWAYS = True        # True: caption stays on for the whole clip; False:
                              # (or choose per run:  --caption always  /  --caption brief)
 WIDTH, HEIGHT, FPS = 1280, 720, 30
 PARALLEL = 4
+
+globals().update(sh_config.player_settings())    # a settings file (SMART_HIGHLIGHTS_CONFIG) replaces the above
 
 PLAYER_URL = f"{gc.TEAM_URL}/players/{PLAYER_ID}"
 API = "https://api.team-manager.gc.com"
@@ -401,6 +406,17 @@ def caption(c, games):
     game = f"{when} vs {opp}" if when and opp else (f"vs {opp}" if opp else when)
     line2 = " · ".join(x for x in [game, inning] if x)
     return play, line2
+
+
+def fill_titles():
+    """Titles may use {player} {team} {season} (and {n} for the Top N title); plain titles stay as they are."""
+    global VIDEO_TITLE, QUICK_TITLE, TOP_TITLE, REEL, NOTE
+    args = dict(player=PLAYER_NAME, team=gc.TEAM_NAME or "", season=gc.SEASON or "")
+    VIDEO_TITLE = sh_config.fill_title(VIDEO_TITLE, **args)
+    QUICK_TITLE = sh_config.fill_title(QUICK_TITLE, **args)
+    TOP_TITLE = sh_config.fill_title(TOP_TITLE, n="{n}", **args)
+    REEL = WORK / f"{gc.safe_name(VIDEO_TITLE)}.mp4"
+    NOTE = WORK / f"{gc.safe_name(VIDEO_TITLE)}.txt"
 
 
 def use_quick_mode(top=0):
@@ -1120,11 +1136,12 @@ def main():
         wait_for_other_runs()
     if getattr(args, "caption", None):
         CAPTION_ALWAYS = args.caption == "always"
-    if getattr(args, "quick", False) or getattr(args, "top", 0):
-        use_quick_mode(getattr(args, "top", 0))
     if not gc.GAMES_JSON.exists() or not gc.TEAM_NAME:
         log("First run for this team: reading the schedule from GameChanger...")
         gc.cmd_scan(args)
+    fill_titles()
+    if getattr(args, "quick", False) or getattr(args, "top", 0):
+        use_quick_mode(getattr(args, "top", 0))
     {"list": cmd_list, "build": cmd_build, "upload": cmd_upload, "run": cmd_run, "sample": cmd_sample}[args.cmd](args)
 
 

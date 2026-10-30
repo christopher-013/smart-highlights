@@ -14,12 +14,16 @@ Safe to re-run: anything already in uploaded.json is never downloaded or uploade
 import argparse
 import datetime as dt
 import json
+import os
 import re
 import shutil
 import subprocess
 import sys
 import time
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import sh_config  # noqa: E402  (optional settings file, see sh_config.py)
 
 # ---------------------------------------------------------------- team settings (the only part that differs per team)
 TEAM_ID = "YOUR_TEAM_ID"                         # from https://web.gc.com/teams/<TEAM_ID>/<slug>
@@ -34,8 +38,14 @@ TAGS = ["{team}", "softball"]
 SHARED_BROWSER_PROFILE = True                    # reuse one GameChanger login for all team folders next to this one
 TITLE_FORMAT = "vs {opp} {date}"
 
+# a settings file (SMART_HIGHLIGHTS_CONFIG), when given, replaces the team settings above
+_OVERRIDES = sh_config.team_settings()
+globals().update(_OVERRIDES)
+BASE = sh_config.workdir(Path(__file__).resolve().parent)   # where logins, downloads and notes are kept
+HEADLESS = sh_config.headless()
+
 # ---------------------------------------------------------------- general settings
-TEAM_JSON = Path(__file__).resolve().parent / "team.json"   # team name GameChanger uses (saved by 'scan')
+TEAM_JSON = BASE / "team.json"   # team name GameChanger uses (saved by 'scan')
 if not TEAM_NAME:
     try:
         TEAM_NAME = json.loads(TEAM_JSON.read_text(encoding="utf-8")).get("name", "")
@@ -84,7 +94,7 @@ CATEGORY_ID = "17"                               # Sports
 MADE_FOR_KIDS = False
 DELETE_AFTER_UPLOAD = True                       # leaves a same-named .txt note behind
 
-ROOT = Path(__file__).resolve().parent
+ROOT = BASE
 WORK = ROOT / "downloads"
 PROFILE = (ROOT.parent if SHARED_BROWSER_PROFILE else ROOT) / "browser_profile"   # keeps you logged in to GameChanger
 GAMES_JSON = ROOT / "games.json"
@@ -98,6 +108,7 @@ SCOPES = [
     "https://www.googleapis.com/auth/youtube",          # needed to create and add to the playlist
 ]
 PLAYLIST_PRIVACY = "unlisted"
+globals().update({k: v for k, v in _OVERRIDES.items() if k in ("PRIVACY", "PLAYLIST_PRIVACY")})
 UUID_RE = re.compile(r"/schedule/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})")
 
 # selectors tried (in order) to make each recording on the /videos page start loading
@@ -166,17 +177,17 @@ _browser = None
 
 
 def find_chrome():
-    import os
     candidates = [
         Path(os.environ.get("PROGRAMFILES", r"C:\Program Files")) / "Google/Chrome/Application/chrome.exe",
         Path(os.environ.get("PROGRAMFILES(X86)", r"C:\Program Files (x86)")) / "Google/Chrome/Application/chrome.exe",
         Path(os.environ.get("LOCALAPPDATA", "")) / "Google/Chrome/Application/chrome.exe",
         Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
+        Path("/usr/bin/google-chrome"), Path("/usr/bin/google-chrome-stable"),
     ]
     for c in candidates:
         if c.exists():
             return str(c)
-    return shutil.which("chrome") or shutil.which("google-chrome")
+    return shutil.which("chrome") or shutil.which("google-chrome") or shutil.which("chromium")
 
 
 def open_browser(p, headless=False):
@@ -191,8 +202,10 @@ def open_browser(p, headless=False):
         chrome = find_chrome()
         if not chrome:
             sys.exit("Couldn't find Google Chrome. Install it, or edit find_chrome() with its path.")
+        extra = (["--headless=new", "--no-sandbox", "--disable-dev-shm-usage", "--window-size=1400,1000"]
+                 if (headless or HEADLESS) else [])
         subprocess.Popen([chrome, f"--remote-debugging-port={CDP_PORT}", f"--user-data-dir={PROFILE}",
-                          "--no-first-run", "--no-default-browser-check", "about:blank"])
+                          "--no-first-run", "--no-default-browser-check", *extra, "about:blank"])
         for _ in range(30):
             time.sleep(1)
             try:
@@ -223,15 +236,90 @@ def game_links(page):
     )
 
 
+# GameChanger login for unattended runs (the hosted service). Read once, then removed from the environment so
+# no helper program (yt-dlp, ffmpeg) ever sees it. Never written to disk or printed.
+_GC_LOGIN = {k: os.environ.pop(k) for k in ("GC_EMAIL", "GC_PASSWORD") if os.environ.get(k)}
+CODE_REQUEST = BASE / "gc_code_needed"          # the service shows "enter the code GameChanger emailed you"
+CODE_FILE = BASE / "gc_code.txt"                # ...and writes the code here
+
+
+def _first_visible(page, selectors, timeout_ms=0):
+    end = time.time() + timeout_ms / 1000
+    while True:
+        for sel in selectors:
+            loc = page.locator(sel)
+            for k in range(min(loc.count(), 5)):
+                if loc.nth(k).is_visible():
+                    return loc.nth(k)
+        if time.time() >= end:
+            return None
+        page.wait_for_timeout(500)
+
+
+def _submit(page):
+    btn = _first_visible(page, ["button[type=submit]", "button:has-text('Sign in')", "button:has-text('Log in')",
+                                "button:has-text('Continue')", "button:has-text('Next')"])
+    if btn:
+        btn.click()
+    else:
+        page.keyboard.press("Enter")
+
+
+def auto_login(page):
+    """Fill in GameChanger's sign-in form: email, password and (if asked) the emailed code."""
+    page.goto("https://web.gc.com/login", wait_until="domcontentloaded")
+    email = _first_visible(page, ["input[type=email]", "input[name*=email i]", "input[autocomplete=username]"], 20000)
+    if not email:
+        sys.exit("GameChanger's sign-in page didn't show an email box.")
+    email.fill(_GC_LOGIN.get("GC_EMAIL", ""))
+    pw = _first_visible(page, ["input[type=password]"], 1500)
+    if not pw:
+        _submit(page)
+        pw = _first_visible(page, ["input[type=password]"], 15000)
+    if pw and _GC_LOGIN.get("GC_PASSWORD"):
+        pw.fill(_GC_LOGIN["GC_PASSWORD"])
+        _submit(page)
+    code_box = ["input[autocomplete=one-time-code]", "input[name*=code i]", "input[inputmode=numeric]"]
+    end = time.time() + 15 * 60
+    while time.time() < end:
+        page.wait_for_timeout(2000)
+        if "/login" not in page.url and not _first_visible(page, ["input[type=password]"] + code_box):
+            log("Signed in to GameChanger")
+            return
+        box = _first_visible(page, code_box)
+        if box:
+            CODE_FILE.unlink(missing_ok=True)
+            CODE_REQUEST.write_text("GameChanger sent a sign-in code by email", encoding="utf-8")
+            log("GameChanger asked for the sign-in code it emailed - waiting for it...")
+            while time.time() < end and not CODE_FILE.exists():
+                time.sleep(2)
+            CODE_REQUEST.unlink(missing_ok=True)
+            if not CODE_FILE.exists():
+                break
+            box.fill(CODE_FILE.read_text(encoding="utf-8").strip())
+            CODE_FILE.unlink(missing_ok=True)
+            _submit(page)
+            continue
+        err = _first_visible(page, ["[role=alert]", "text=/incorrect|invalid|wrong/i"])
+        if err:
+            sys.exit("GameChanger didn't accept the sign-in: " + (err.inner_text() or "").strip()[:200])
+    sys.exit("Couldn't finish signing in to GameChanger.")
+
+
 def ensure_logged_in(page):
     page.goto(SCHEDULE_URL, wait_until="domcontentloaded")
     page.wait_for_timeout(5000)
     if any(UUID_RE.search(a["href"]) for a in game_links(page)):
         return
-    page.goto("https://web.gc.com/login", wait_until="domcontentloaded")
-    print("\n>>> Sign in to GameChanger in the browser window that just opened.")
-    print(">>> After you're signed in, come back here and press Enter.")
-    input()
+    if _GC_LOGIN:
+        auto_login(page)
+    else:
+        page.goto("https://web.gc.com/login", wait_until="domcontentloaded")
+        if HEADLESS:
+            sys.exit("Not signed in to GameChanger and no login was given (GC_EMAIL / GC_PASSWORD).")
+        print("\n>>> Sign in to GameChanger in the browser window that just opened.")
+        print(">>> After you're signed in, come back here and press Enter.")
+        input()
     page.goto(SCHEDULE_URL, wait_until="domcontentloaded")
     page.wait_for_timeout(5000)
     if not any(UUID_RE.search(a["href"]) for a in game_links(page)):
@@ -920,7 +1008,7 @@ def youtube():
     from google_auth_oauthlib.flow import InstalledAppFlow
     from googleapiclient.discovery import build
 
-    if not CLIENT_SECRET.exists():
+    if not CLIENT_SECRET.exists() and not TOKEN.exists():
         sys.exit(f"Missing {CLIENT_SECRET.name}. Create one in Google Cloud Console (see README).")
     creds = Credentials.from_authorized_user_file(str(TOKEN), SCOPES) if TOKEN.exists() else None
     if TOKEN.exists():
@@ -930,6 +1018,8 @@ def youtube():
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
             creds.refresh(Request())
+        elif HEADLESS:
+            sys.exit("The YouTube sign-in has expired - connect YouTube again.")
         else:
             print(f"\n>>> A Google sign-in page will open. Choose the '{CHANNEL_NAME}' channel.\n")
             creds = InstalledAppFlow.from_client_secrets_file(str(CLIENT_SECRET), SCOPES).run_local_server(
@@ -938,7 +1028,7 @@ def youtube():
     yt = build("youtube", "v3", credentials=creds)
     items = yt.channels().list(part="snippet", mine=True).execute().get("items", [])
     handle = (items[0]["snippet"].get("customUrl", "") if items else "").lstrip("@").lower()
-    if handle != EXPECTED_HANDLE:
+    if EXPECTED_HANDLE and handle != EXPECTED_HANDLE:
         TOKEN.unlink(missing_ok=True)
         sys.exit(f"Signed in to channel '@{handle}', not '@{EXPECTED_HANDLE}'. Run again and pick the right channel.")
     log(f"YouTube: uploading to @{handle}")

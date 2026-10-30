@@ -108,7 +108,7 @@ SCOPES = [
     "https://www.googleapis.com/auth/youtube",          # needed to create and add to the playlist
 ]
 PLAYLIST_PRIVACY = "unlisted"
-globals().update({k: v for k, v in _OVERRIDES.items() if k in ("PRIVACY", "PLAYLIST_PRIVACY")})
+globals().update({k: v for k, v in _OVERRIDES.items() if k in ("PRIVACY", "PLAYLIST_PRIVACY", "DELETE_AFTER_UPLOAD")})
 UUID_RE = re.compile(r"/schedule/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})")
 
 # selectors tried (in order) to make each recording on the /videos page start loading

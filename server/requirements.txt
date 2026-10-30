@@ -1,0 +1,9 @@
+fastapi==0.115.6
+uvicorn[standard]==0.32.1
+pydantic==2.10.4
+google-auth==2.37.0
+google-auth-oauthlib==1.2.1
+google-api-python-client==2.156.0
+playwright==1.49.1
+yt-dlp==2024.12.13
+imageio-ffmpeg==0.5.1

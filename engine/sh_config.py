@@ -92,6 +92,8 @@ def team_settings():
         out["PRIVACY"] = c["privacy"]
         out["PLAYLIST_PRIVACY"] = c["privacy"]
     out["SHARED_BROWSER_PROFILE"] = bool(c.get("shared_browser_profile", False))
+    if "delete_after_upload" in c:
+        out["DELETE_AFTER_UPLOAD"] = bool(c["delete_after_upload"])
     return out
 
 

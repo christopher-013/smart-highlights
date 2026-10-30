@@ -9,6 +9,6 @@ jobs:
         with:
           python-version: "3.12"
       - run: sudo apt-get update && sudo apt-get install -y ffmpeg
-      - run: pip install -r server/requirements.txt pyflakes pytest
+      - run: pip install -r server/requirements.txt pyflakes pytest httpx
       - run: python -m pyflakes engine server tests
       - run: python -m pytest -q tests

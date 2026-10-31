@@ -3,14 +3,17 @@ Smart Highlights on your own computer: the page in docs/ plus the few actions be
 
   Open Smart Highlights.bat     starts this and opens the page (double-click it)
 
-  POST /api/open        open GameChanger in its own Chrome window; you sign in and go to your player's page
-  GET  /api/status      is Chrome open, which player is on screen, how the reel is coming along
-  POST /api/reels       make the Smart Highlights reel for that player, kept on this computer
+  POST /api/open        open GameChanger in its own Chrome window, where you sign in
+  GET  /api/teams       your teams, once you're signed in
+  GET  /api/teams/<id>/players   that team's active players
+  GET  /api/status      is Chrome open, how the reel is coming along
+  POST /api/reels       make the Smart Highlights reel for the chosen player, kept on this computer
   POST /api/reel/open   play the finished reel
   POST /api/reel/show   show the finished reel in its folder
 
-You sign in to GameChanger yourself in that Chrome window, and this program never sees the password. It only
-answers on this computer, and only to its own page: another website can't start a reel from your browser.
+You sign in to GameChanger yourself in that Chrome window, and this program never sees the password. The team and
+player lists are what GameChanger's own pages load in that window; nothing else about other people is read or kept.
+It only answers on this computer, and only to its own page: another website can't start a reel from your browser.
 
 Settings (environment variables):
   SMART_HIGHLIGHTS_HOME   where team folders and the Chrome sign-in are kept (default: "Smart Highlights" in your home folder)
@@ -42,7 +45,12 @@ import sh_config  # noqa: E402
 HOME = Path(os.environ.get("SMART_HIGHLIGHTS_HOME") or Path.home() / "Smart Highlights").resolve()
 PORT = int(os.environ.get("SMART_HIGHLIGHTS_PORT", "8765"))
 CDP = "http://127.0.0.1:9222"
-GC_START = "https://web.gc.com/teams"
+GC_WEB = "https://web.gc.com"
+GC_START = GC_WEB + "/teams"
+API = "https://api.team-manager.gc.com"
+TEAMS_RE = re.escape(API) + r"/me/teams"
+SIGN_IN_RE = re.compile(r"web\.gc\.com/(login|sign)", re.I)
+SPORTS = ("softball", "baseball")
 LAST_PLAYER = "last_player.json"
 SEASON_SLUG_RE = re.compile(r"^(\d{4})-(spring|summer|fall|winter)", re.I)
 STAGES = [(r"reading the schedule", "Reading the team schedule"),
@@ -56,6 +64,9 @@ _read_lock = threading.Lock()
 _seen = None                # the tabs open when GameChanger was opened: {tab id: address}. Older tabs don't count.
 _opened_tab = None
 _players = {}               # address -> what its page said
+_teams = None               # the team menu, once it has loaded
+_team_players = {}          # team id -> its player menu
+_signed_out_at = None       # the address that showed a signed-out page: left alone until it changes
 _job = None
 
 
@@ -145,14 +156,6 @@ def current_player(tabs):
 
 
 # ---------------------------------------------------------------- opening GameChanger
-def start_address():
-    """The last player's page when there is one, so a repeat visit needs no clicking around."""
-    try:
-        return json.loads((HOME / LAST_PLAYER).read_text(encoding="utf-8"))["url"]
-    except (OSError, ValueError, KeyError):
-        return GC_START
-
-
 def start_chrome(url):
     chrome = sh_config.find_chrome()
     if not chrome:
@@ -177,18 +180,144 @@ def open_new_tab(url):
 
 @app.post("/api/open")
 def open_gamechanger():
-    global _seen, _opened_tab
+    global _seen, _opened_tab, _teams, _signed_out_at
     if job_running():
         raise HTTPException(409, "Your reel is being made in that window. Please wait for it to finish.")
-    url = start_address()
+    _teams, _signed_out_at = None, None
+    _team_players.clear()
     tabs = open_tabs()
     if tabs is None:
         _seen, _opened_tab = {}, None
-        start_chrome(url)
+        start_chrome(GC_START)
     else:
         _seen = {t.get("id"): t.get("url") for t in tabs}
-        _opened_tab = open_new_tab(url)
+        _opened_tab = open_new_tab(GC_START)
     return {"ok": True}
+
+
+# ---------------------------------------------------------------- the team and player menus
+def parse_teams(bodies):
+    """The account's softball and baseball teams from GameChanger's team lists, newest season first."""
+    teams = {}
+    for body in bodies:
+        for t in body if isinstance(body, list) else []:
+            if t.get("public_id") and t.get("sport") in SPORTS:
+                season = str(t.get("season_name") or "").title()
+                year = t.get("season_year") or 0
+                teams[t["id"]] = {"id": t["id"], "public_id": t["public_id"], "name": t.get("name") or "Team",
+                                  "year": year, "season": f"{season} {year}".strip() if year else season}
+    order = {"Winter": 1, "Spring": 2, "Summer": 3, "Fall": 4}
+    return sorted(teams.values(), key=lambda t: (-t["year"], -order.get(t["season"].split(" ")[0], 0), t["name"].lower()))
+
+
+def parse_players(body):
+    """Active players with a name, by name. Players removed from the team are left out."""
+    out = []
+    for x in body if isinstance(body, list) else []:
+        name = " ".join(str(x.get(k) or "").strip() for k in ("first_name", "last_name")).strip()
+        if x.get("status") == "active" and name:
+            out.append({"id": x["id"], "name": name, "number": str(x.get("number") or "")})
+    return sorted(out, key=lambda x: x["name"].lower())
+
+
+def gc_tab(browser):
+    """The GameChanger tab we opened, or else any GameChanger tab, or else a new one."""
+    pages = [t for c in browser.contexts for t in c.pages]
+    url = next((t.get("url") for t in open_tabs() or [] if t.get("id") == _opened_tab), None)
+    found = next((t for t in pages if t.url == url), None) or next((t for t in pages if "web.gc.com" in t.url), None)
+    return found or browser.contexts[0].new_page()
+
+
+def load_lists(url, wanted, enough, seconds=20):
+    """Open url in the GameChanger tab and collect the lists that page itself loads: only addresses matching wanted."""
+    from playwright.sync_api import sync_playwright
+    with sync_playwright() as p:
+        browser = p.chromium.connect_over_cdp(CDP, timeout=10000)
+        try:
+            page = gc_tab(browser)
+            seen = []
+            page.on("response", lambda r: seen.append(r) if re.match(wanted, r.url) and r.status == 200 else None)
+            page.goto(url, wait_until="domcontentloaded")
+            end = time.time() + seconds
+            while time.time() < end and not any(re.search(enough, r.url) for r in seen) and not SIGN_IN_RE.search(page.url):
+                page.wait_for_timeout(500)
+            page.wait_for_timeout(500)
+            return page.url, page.evaluate("document.body.innerText") or "", [r.json() for r in seen]
+        finally:
+            browser.close()
+
+
+@app.get("/api/teams")
+def teams_list():
+    """state: ready | signin (waiting for you to sign in) | loading | closed | failed."""
+    global _teams, _signed_out_at
+    if job_running():
+        return {"state": "loading"}
+    if _teams:
+        return {"state": "ready", "teams": _teams, "last": last_choice()}
+    tabs = open_tabs()
+    if tabs is None or _seen is None:
+        return {"state": "closed"}
+    here = next((t.get("url", "") for t in tabs if t.get("id") == _opened_tab), "")
+    if SIGN_IN_RE.search(here) or (here and here == _signed_out_at):     # never reload a page you're typing into
+        return {"state": "signin"}
+    if not _read_lock.acquire(blocking=False):
+        return {"state": "loading"}
+    try:
+        url, text, bodies = load_lists(GC_START, TEAMS_RE, "team_public_profile_id")
+    except Exception:
+        return {"state": "failed"}
+    finally:
+        _read_lock.release()
+    if SIGN_IN_RE.search(url) or sh_config.looks_signed_out(text):
+        _signed_out_at = url
+        return {"state": "signin"}
+    _teams = parse_teams(bodies) or None
+    return {"state": "ready", "teams": _teams, "last": last_choice()} if _teams else {"state": "failed"}
+
+
+def team_by_id(team_id):
+    team = next((t for t in _teams or [] if t["id"] == team_id), None)
+    if not team:
+        raise HTTPException(404, "That team isn't in your list. Open GameChanger again.")
+    return team
+
+
+@app.get("/api/teams/{team_id}/players")
+def players_list(team_id: str):
+    team = team_by_id(team_id)
+    if team_id not in _team_players:
+        if job_running():
+            raise HTTPException(409, "Your reel is being made. Please wait for it to finish.")
+        if not _read_lock.acquire(timeout=30):
+            raise HTTPException(503, "Still loading. Please try again.")
+        try:
+            wanted = rf"{re.escape(API)}/teams/{re.escape(team_id)}/players"
+            _, _, bodies = load_lists(f"{GC_WEB}/teams/{team['public_id']}/team", wanted, "/players")
+        except Exception:
+            raise HTTPException(502, "Couldn't load that team's players. Is the GameChanger window still open?")
+        finally:
+            _read_lock.release()
+        if not bodies:
+            raise HTTPException(502, "GameChanger didn't send that team's players. Please try again.")
+        _team_players[team_id] = parse_players(bodies[0])
+    return {"players": _team_players[team_id]}
+
+
+def last_choice():
+    try:
+        return json.loads((HOME / LAST_PLAYER).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def chosen_player(team_id, player_id):
+    team = team_by_id(team_id)
+    player = next((x for x in _team_players.get(team_id, []) if x["id"] == player_id), None)
+    if not player:
+        raise HTTPException(404, "That player isn't in the team's list. Choose them again.")
+    return {"url": f"{GC_WEB}/teams/{team['public_id']}/players/{player_id}", "name": player["name"],
+            "team": team["name"], "season": team["season"]}
 
 
 # ---------------------------------------------------------------- making the reel
@@ -247,7 +376,9 @@ def make_reel(job, cmd, folder):
 
 
 class ReelRequest(BaseModel):
-    player_name: str = Field(default="", max_length=80)     # only when the page didn't show a name
+    team_id: str = Field(default="", max_length=64)         # from the menus
+    player_id: str = Field(default="", max_length=64)
+    player_name: str = Field(default="", max_length=80)     # no menus, and the page didn't show a name
     limit: int = Field(default=0, ge=0, le=500)             # a quick trial: only the first N plays
 
 
@@ -256,16 +387,19 @@ def start_reel(req: ReelRequest):
     global _job
     if job_running():
         raise HTTPException(409, "A reel is already being made.")
-    player = current_player(open_tabs())
-    if not player or player.get("reading"):
-        raise HTTPException(400, "Open your player's page in the GameChanger window first.")
-    if player.get("signed_out"):
-        raise HTTPException(400, "Sign in to GameChanger in that window first.")
-    player = dict(player, name=req.player_name.strip() or player.get("name", ""))
-    if not player["name"]:
-        raise HTTPException(400, "Please enter the player's name.")
+    if req.team_id:
+        player = chosen_player(req.team_id, req.player_id)
+    else:                                       # the menus couldn't load: use the player's page that's open
+        player = current_player(open_tabs())
+        if not player or player.get("reading"):
+            raise HTTPException(400, "Open your player's page in the GameChanger window first.")
+        if player.get("signed_out"):
+            raise HTTPException(400, "Sign in to GameChanger in that window first.")
+        player = dict(player, name=req.player_name.strip() or player.get("name", ""))
+        if not player["name"]:
+            raise HTTPException(400, "Please enter the player's name.")
     HOME.mkdir(parents=True, exist_ok=True)
-    (HOME / LAST_PLAYER).write_text(json.dumps({"url": player["url"]}), encoding="utf-8")
+    (HOME / LAST_PLAYER).write_text(json.dumps({"team_id": req.team_id, "player_id": req.player_id}), encoding="utf-8")
     folder = folder_for(player)
     with _lock:
         _job = {"status": "running", "stage": "Starting", "player": player["name"], "team": player.get("team", ""),
@@ -308,7 +442,8 @@ def status():
     if job and job["status"] == "running":      # the engine is using Chrome: leave it alone
         return {"chrome": True, "opened": True, "player": None, "job": job}
     tabs = open_tabs()
-    return {"chrome": tabs is not None, "opened": _seen is not None, "player": current_player(tabs), "job": job}
+    player = None if _teams else current_player(tabs)        # the open page only matters when the menus didn't load
+    return {"chrome": tabs is not None, "opened": _seen is not None, "player": player, "job": job}
 
 
 app.mount("/", StaticFiles(directory=HERE.parent / "docs", html=True), name="page")

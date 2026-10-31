@@ -35,8 +35,9 @@ py -3.12 -m venv .venv
 
 Then double-click **Open Smart Highlights.bat** and, on the page that opens:
 
-1. Click **Open GameChanger**. Sign in if it asks, and go to your player's page.
-2. Come back to the page. It shows the player it found, with nothing to type. Click **Make highlight reel**.
+1. Click **Open GameChanger**, and sign in if it asks.
+2. Come back to the page and choose your team and player from the menus. Your last choice is already picked.
+3. Click **Make highlight reel**.
 
 The Smart Highlights reel stays on this computer, in `Smart Highlights\<team>\highlights\<Player>_quick\` in your
 home folder. Set `SMART_HIGHLIGHTS_HOME` to keep it somewhere else. Adding `?limit=4` to the page's address makes a

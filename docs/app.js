@@ -4,6 +4,10 @@
   const ORDER = ["Reading the team schedule", "Finding the player's clips", "Downloading and cutting clips", "Joining the reel"];
   let dismissed = false;
   let timer = null;
+  let menus = "";           // ready, signin, loading, closed or failed
+  let askingTeams = false;
+  let pageReady = false;
+  let lastPlayer = "";
 
   async function post(path, body) {
     const r = await fetch(path, {
@@ -15,30 +19,104 @@
     }
   }
 
+  // ---- the team and player menus
+  function option(value, text) {
+    const o = document.createElement("option");
+    o.value = value; o.textContent = text;
+    return o;
+  }
+
+  function fillTeams(teams, last) {
+    const sel = $("team");
+    sel.replaceChildren(option("", "Choose a team"));
+    $("who").disabled = true;
+    $("who").replaceChildren(option("", "Choose a team first"));
+    const years = new Map();
+    for (const t of teams) {
+      const label = t.year || "Other";
+      if (!years.has(label)) {
+        const g = document.createElement("optgroup");
+        g.label = label;
+        years.set(label, g);
+        sel.append(g);
+      }
+      years.get(label).append(option(t.id, t.season ? t.name + " · " + t.season : t.name));
+    }
+    $("menus").hidden = false;
+    lastPlayer = (last && last.player_id) || "";
+    if (last && teams.some((t) => t.id === last.team_id)) {
+      sel.value = last.team_id;
+      loadPlayers();
+    }
+  }
+
+  async function loadPlayers() {
+    const team = $("team").value;
+    const who = $("who");
+    $("menu-error").textContent = "";
+    who.disabled = true;
+    who.replaceChildren(option("", team ? "Loading players…" : "Choose a team first"));
+    updateMake();
+    if (!team) return;
+    try {
+      const r = await fetch("api/teams/" + encodeURIComponent(team) + "/players");
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(typeof data.detail === "string" ? data.detail : "Couldn't load that team's players.");
+      if ($("team").value !== team) return;       // a different team was chosen in the meantime
+      who.replaceChildren(option("", data.players.length ? "Choose a player" : "No players on this team"));
+      for (const p of data.players) who.append(option(p.id, p.number ? p.name + " · #" + p.number : p.name));
+      who.disabled = !data.players.length;
+      if (data.players.some((p) => p.id === lastPlayer)) who.value = lastPlayer;
+    } catch (ex) {
+      if ($("team").value !== team) return;
+      who.replaceChildren(option("", "Couldn't load players"));
+      $("menu-error").textContent = ex.message;
+    }
+    updateMake();
+  }
+
+  function updateMake() {
+    const usingPage = menus === "failed" && pageReady;
+    $("make").disabled = !(usingPage || (menus === "ready" && $("team").value && $("who").value));
+  }
+
+  async function checkTeams() {
+    if (askingTeams) return;
+    askingTeams = true;
+    try {
+      const data = await (await fetch("api/teams")).json();
+      menus = data.state;
+      if (menus === "ready") fillTeams(data.teams, data.last);
+    } catch { /* tried again on the next refresh */ }
+    askingTeams = false;
+  }
+
   function showPlayer(s) {
+    if (s.chrome && s.opened && menus !== "ready" && menus !== "failed") checkTeams();
     const p = s.player;
-    const ready = Boolean(p && !p.reading && !p.signed_out);
-    const nameKnown = ready && Boolean(p.name);
+    pageReady = Boolean(p && !p.reading && !p.signed_out);
+    const onPage = menus === "failed" && pageReady;
+    const nameKnown = onPage && Boolean(p.name);
     $("player").hidden = !nameKnown;
-    $("name-row").hidden = !ready || nameKnown;
+    $("name-row").hidden = !onPage || nameKnown;
     if (nameKnown) {
       $("player-name").textContent = p.name;
       $("player-team").textContent = [p.team, p.season].filter(Boolean).join(" · ");
       $("player-clips").textContent = p.clips ? p.clips + " clips" : "";
     }
-    $("make").disabled = !ready;
+    updateMake();
     const st = $("look");
     st.className = "status";
-    if (ready) {
+    if (!s.chrome && s.opened) {
+      st.textContent = menus === "ready" ? "" : "The GameChanger window was closed. Open it again to continue.";
+    } else if (menus === "ready" || !s.opened) {
       st.textContent = "";
-    } else if (p && p.signed_out) {
+    } else if (menus === "failed") {
+      st.textContent = onPage ? "" : "Your teams didn't load. Go to your player's page in the GameChanger window instead.";
+    } else if (menus === "signin") {
       st.textContent = "Sign in to GameChanger in the window that opened.";
-    } else if (!s.chrome && s.opened) {
-      st.textContent = "The GameChanger window was closed. Open it again to continue.";
-    } else if (s.chrome && s.opened) {
-      st.textContent = "Waiting for you to open your player's page…";
     } else {
-      st.textContent = "";
+      st.textContent = "Loading your teams…";
     }
     $("open").textContent = s.chrome && s.opened ? "Open GameChanger again" : "Open GameChanger";
     $("open").className = "btn " + (s.chrome && s.opened ? "ghost" : "go");
@@ -94,6 +172,8 @@
   $("open").addEventListener("click", async () => {
     $("error").textContent = "";
     $("open").disabled = true;
+    menus = "";
+    $("menus").hidden = true;
     try { await post("api/open"); } catch (ex) { $("error").textContent = ex.message; }
     $("open").disabled = false;
     refresh();
@@ -103,12 +183,16 @@
     $("error").textContent = "";
     $("make").disabled = true;
     try {
-      await post("api/reels", { player_name: $("name-row").hidden ? "" : $("typed-name").value.trim(), limit: trial });
+      await post("api/reels", menus === "ready"
+        ? { team_id: $("team").value, player_id: $("who").value, limit: trial }
+        : { player_name: $("name-row").hidden ? "" : $("typed-name").value.trim(), limit: trial });
       dismissed = false;
     } catch (ex) { $("error").textContent = ex.message; }
     refresh();
   });
 
+  $("team").addEventListener("change", loadPlayers);
+  $("who").addEventListener("change", updateMake);
   $("watch").addEventListener("click", () => post("api/reel/open").catch((ex) => { $("unsure").hidden = false; $("unsure").textContent = ex.message; }));
   $("show").addEventListener("click", () => post("api/reel/show").catch((ex) => { $("unsure").hidden = false; $("unsure").textContent = ex.message; }));
   $("again").addEventListener("click", () => { dismissed = true; refresh(); });

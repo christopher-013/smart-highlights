@@ -1,4 +1,3 @@
-import json
 import os
 import sys
 import tempfile
@@ -7,6 +6,7 @@ from pathlib import Path
 D = tempfile.mkdtemp()
 os.environ["SMART_HIGHLIGHTS_HOME"] = D
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import pytest
 from fastapi.testclient import TestClient
 from server import local_app as app
 
@@ -48,6 +48,94 @@ def wait_for_job(c):
             return j
         app.time.sleep(0.05)
     raise AssertionError("job never finished")
+
+
+TEAM_ID = "11111111-2222-4333-8444-555555555555"
+PLAYER_ID = "abcdef12-3456-4abc-8def-1234567890ab"
+TEAMS = [{"id": TEAM_ID, "public_id": "AbC123", "name": "Example Team 12U", "sport": "softball", "season_name": "fall", "season_year": 2024},
+         {"id": "older", "public_id": "Old1", "name": "Older", "sport": "baseball", "season_name": "spring", "season_year": 2024},
+         {"id": "newer", "public_id": "New1", "name": "Newer", "sport": "softball", "season_name": "winter", "season_year": 2025},
+         {"id": "other", "public_id": "Vb1", "name": "Volleyball", "sport": "volleyball", "season_name": "fall", "season_year": 2026},
+         {"id": "nolink", "name": "No address", "sport": "softball", "season_name": "fall", "season_year": 2026}]
+PLAYERS = [{"id": PLAYER_ID, "first_name": "Jane", "last_name": "Doe", "number": "13", "status": "active"},
+           {"id": "b", "first_name": "Amy", "last_name": "Roe", "number": None, "status": "active"},
+           {"id": "gone", "first_name": "Left", "last_name": "Team", "number": "9", "status": "removed"},
+           {"id": "blank", "first_name": " ", "last_name": "", "number": "1", "status": "active"}]
+
+
+def test_team_menu_is_softball_and_baseball_newest_first():
+    got = app.parse_teams([TEAMS[:1], TEAMS, {"not": "a list"}])
+    assert [t["id"] for t in got] == ["newer", TEAM_ID, "older"]
+    assert got[1] == {"id": TEAM_ID, "public_id": "AbC123", "name": "Example Team 12U", "year": 2024, "season": "Fall 2024"}
+
+
+def test_player_menu_is_active_named_players_only():
+    assert app.parse_players(PLAYERS) == [{"id": "b", "name": "Amy Roe", "number": ""},
+                                          {"id": PLAYER_ID, "name": "Jane Doe", "number": "13"}]
+
+
+def signed_in(monkeypatch, tab_url="https://web.gc.com/teams"):
+    monkeypatch.setattr(app, "open_tabs", lambda: [{"id": "t", "url": tab_url, "type": "page"}])
+    monkeypatch.setattr(app, "_seen", {})
+    monkeypatch.setattr(app, "_opened_tab", "t")
+    monkeypatch.setattr(app, "_teams", None)
+    monkeypatch.setattr(app, "_team_players", {})
+    monkeypatch.setattr(app, "_signed_out_at", None)
+    monkeypatch.setattr(app, "_job", None)
+
+
+def test_never_reloads_the_sign_in_page(monkeypatch):
+    signed_in(monkeypatch, "https://web.gc.com/login")
+    monkeypatch.setattr(app, "load_lists", lambda *a, **k: pytest.fail("reloaded a page someone may be typing into"))
+    with client() as c:
+        assert c.get("/api/teams").json() == {"state": "signin"}
+
+
+def test_signed_out_redirect_is_remembered(monkeypatch):
+    signed_in(monkeypatch)
+    calls = []
+
+    def fake(*a, **k):
+        calls.append(a)
+        return "https://web.gc.com/teams", "Pricing Support Sign In Join Us", []
+    monkeypatch.setattr(app, "load_lists", fake)
+    with client() as c:
+        assert c.get("/api/teams").json() == {"state": "signin"}
+        assert c.get("/api/teams").json() == {"state": "signin"}
+    assert len(calls) == 1                                       # left alone until the page changes
+
+
+def test_makes_a_reel_from_the_menus(monkeypatch, tmp_path):
+    reel = tmp_path / "Reel.mp4"
+    reel.write_bytes(b"x")
+    fake = tmp_path / "fake.py"
+    fake.write_text(f"""import sys
+print("args", " ".join(sys.argv[1:]))
+print(r"[10:00:03] Reel ready: {reel} (0.27 GB, 17 min)")
+""", encoding="utf-8")
+    monkeypatch.setenv("ENGINE_CMD", f"{sys.executable} -u {fake}")
+    signed_in(monkeypatch)
+    calls = []
+
+    def lists(url, wanted, enough, seconds=20):
+        calls.append(url)
+        return (url, "", [TEAMS]) if url == app.GC_START else (url, "", [PLAYERS])
+    monkeypatch.setattr(app, "load_lists", lists)
+    with client() as c:
+        got = c.get("/api/teams").json()
+        assert got["state"] == "ready" and len(got["teams"]) == 3
+        assert c.get("/api/teams/nope/players").status_code == 404
+        names = c.get(f"/api/teams/{TEAM_ID}/players").json()["players"]
+        assert [p["name"] for p in names] == ["Amy Roe", "Jane Doe"]
+        c.get(f"/api/teams/{TEAM_ID}/players")
+        assert calls == [app.GC_START, f"{app.GC_WEB}/teams/AbC123/team"]    # each list is only loaded once
+        assert c.post("/api/reels", json={"team_id": TEAM_ID, "player_id": "gone"}).status_code == 404
+        assert c.post("/api/reels", json={"team_id": TEAM_ID, "player_id": PLAYER_ID}).status_code == 200
+        j = wait_for_job(c)
+        assert j["status"] == "done" and j["player"] == "Jane Doe", j
+        assert f"--player-url {app.GC_WEB}/teams/AbC123/players/{PLAYER_ID} --player-name Jane Doe --season Fall 2024" in j["log"][0]
+        assert Path(D, "Example Team 12U Fall 2024").is_dir()
+        assert c.get("/api/teams").json()["last"] == {"team_id": TEAM_ID, "player_id": PLAYER_ID}
 
 
 def test_reads_the_player_page():
@@ -110,8 +198,6 @@ print(r"[10:00:03] Reel ready: {reel} (0.27 GB, 17 min)")
         args = j["log"][0]
         assert "--reel smart --local --no-questions" in args and "--upload" not in args
         assert Path(D, "Example Team 12U Fall 2024").is_dir()
-        assert json.loads(Path(D, app.LAST_PLAYER).read_text(encoding="utf-8"))["url"] == URL
-        assert app.start_address() == URL
 
 
 def test_failed_reel_says_why(monkeypatch, tmp_path):

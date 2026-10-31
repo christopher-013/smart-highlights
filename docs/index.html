@@ -47,12 +47,26 @@
 
     <div id="start">
       <div class="step">
-        <h3><span class="n">1</span>Find your player</h3>
-        <p class="help">GameChanger opens in its own window. Sign in if it asks, go to your player's page, then come back here.</p>
+        <h3><span class="n">1</span>Open GameChanger</h3>
+        <p class="help">It opens in its own window. Sign in if it asks, then come back here.</p>
         <div class="yt-row">
           <button type="button" id="open" class="btn go">Open GameChanger</button>
           <p id="look" class="status" role="status"></p>
         </div>
+      </div>
+      <div class="step">
+        <h3><span class="n">2</span>Choose your player</h3>
+        <div id="menus" class="row" hidden>
+          <div>
+            <label for="team">Team</label>
+            <select id="team"></select>
+          </div>
+          <div>
+            <label for="who">Player</label>
+            <select id="who" disabled></select>
+          </div>
+        </div>
+        <p class="error" id="menu-error" role="alert"></p>
         <div id="player" class="player" hidden>
           <b id="player-name"></b>
           <span id="player-team"></span>
@@ -64,7 +78,7 @@
         </div>
       </div>
       <div class="step">
-        <h3><span class="n">2</span>Make the reel</h3>
+        <h3><span class="n">3</span>Make the reel</h3>
         <button type="button" id="make" class="btn go" disabled>Make highlight reel</button>
         <p class="error" id="error" role="alert"></p>
       </div>

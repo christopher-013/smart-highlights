@@ -81,6 +81,7 @@ input, select { width: 100%; font: inherit; color: var(--ink); background: var(-
   border-radius: 5px; padding: 10px 12px; min-height: 46px; }
 input:focus, select:focus { border-color: var(--grass-hi); }
 .row { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 0 18px; }
+#menus { grid-template-columns: 1fr; max-width: 560px; }   /* team names are long: show them whole */
 .check { display: flex; gap: 12px; align-items: flex-start; font-weight: 400; margin: 12px 0; }
 .check input[type=checkbox] { width: 22px; height: 22px; min-height: 0; margin: 2px 0 0; accent-color: var(--grass); flex: none; }
 .check input[type=number] { width: 4.2em; min-height: 0; padding: 2px 6px; display: inline-block; }

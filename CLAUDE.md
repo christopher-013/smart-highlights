@@ -1,7 +1,7 @@
 # Smart Highlights - notes for Claude
 
 Turns a season of GameChanger clips for one player into YouTube highlight reels. Owner: Christopher
-(christopher-013). Repo is private until the hosted service is ready.
+(christopher-013). This repo is public, so anything committed here can be read by anyone.
 
 ## Layout
 - `engine/` - the working scripts (also run standalone on Christopher's Windows PC in `D:\GameChanger\<Team Season>\`).

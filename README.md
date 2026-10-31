@@ -26,8 +26,32 @@ Checked frame by frame on real clips from four different camera setups.
 
 ## Run it on your own computer
 
-Needs Python 3.11+, Google Chrome, and
-`pip install playwright google-api-python-client google-auth-oauthlib yt-dlp imageio-ffmpeg`.
+Needs Python 3.12 and Google Chrome. Once, from this folder:
+
+```
+py -3.12 -m venv .venv
+.venv\Scripts\python.exe -m pip install -r server\requirements.txt
+```
+
+Then double-click **Make Highlights.bat**. It asks for a team folder, the player's GameChanger link, which reel
+you want, and whether to keep it on this computer or upload it. Answers are saved in the team folder as
+`smart_highlights.json`. If a sign-in is needed, sign in to GameChanger in the Chrome window that comes up.
+
+- Reels are kept in `<team folder>\highlights\<Player>_quick\` (or `<Player>\` for full clips).
+- Uploading needs a Google Cloud OAuth client (type *Desktop app*, YouTube Data API v3 enabled) saved in the team
+  folder as `client_secret.json`. Uploads are Unlisted, ask you to confirm first, and keep a copy on this computer.
+- To try it quickly, or test the setup without changing anything (from this folder):
+
+```
+.venv\Scripts\python.exe engine\make_reel.py --folder "D:\GameChanger\My Team Fall 2024" --reel smart --limit 4 --local
+.venv\Scripts\python.exe engine\make_reel.py --folder "D:\GameChanger\My Team Fall 2024" --check
+```
+
+`--limit N` makes a trial of the first N plays, with its own title, so it never replaces the full reel.
+
+### Or run the scripts directly
+
+Needs `pip install -r server\requirements.txt` in the Python you use.
 
 1. Copy `engine/` to a folder per team (for example `D:\GameChanger\My Team Fall 2024\`).
 2. Edit the settings at the top of `gc_to_youtube.py` (team) and `highlights.py` (player), or write a settings
@@ -63,7 +87,8 @@ Repository Settings > Pages > Deploy from a branch > `main`, folder `/docs`.
 
 ## Tests
 
-`python -m pytest tests` (the detection test needs ffmpeg). GitHub Actions runs them on every push.
+`python -m pytest tests`. They use real ffmpeg with GameChanger and YouTube faked, so nothing leaves the computer.
+GitHub Actions runs them on every push.
 
 ## Before going public
 

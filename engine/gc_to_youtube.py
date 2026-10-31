@@ -174,6 +174,7 @@ def need(tool):
 # ---------------------------------------------------------------- browser
 CDP_PORT = 9222
 _browser = None
+_page = None
 
 
 def find_chrome():
@@ -194,11 +195,15 @@ def open_browser(p, headless=False):
     """Start (or reuse) a normal Chrome window with its own profile and control it over the debugging port.
     GameChanger refuses to load accounts in Playwright's own automated browser, but works in regular Chrome."""
     global _browser
+    global _page
     PROFILE.mkdir(exist_ok=True)
     url = f"http://127.0.0.1:{CDP_PORT}"
     try:
-        _browser = p.chromium.connect_over_cdp(url, timeout=3000)
+        _browser = p.chromium.connect_over_cdp(url, timeout=15000)
     except Exception:
+        if chrome_answers(url):
+            sys.exit("Chrome is running but this program couldn't attach to it, usually because Playwright is older "
+                     "than Chrome. Run:  py -m pip install -U playwright   (or close that Chrome window and try again)")
         chrome = find_chrome()
         if not chrome:
             sys.exit("Couldn't find Google Chrome. Install it, or edit find_chrome() with its path.")
@@ -217,12 +222,25 @@ def open_browser(p, headless=False):
             sys.exit("Chrome started but the script couldn't connect to it. Close all Chrome windows "
                      "that use the script's profile and try again.")
     ctx = _browser.contexts[0] if _browser.contexts else _browser.new_context()
-    page = ctx.new_page()
+    _page = page = ctx.new_page()
     return ctx, page
 
 
+def chrome_answers(url):
+    import urllib.request
+    try:
+        with urllib.request.urlopen(f"{url}/json/version", timeout=3):
+            return True
+    except Exception:
+        return False
+
+
 def close_browser(ctx):
-    """Disconnect from Chrome; the window stays open and stays signed in."""
+    """Close this run's tab and disconnect from Chrome; the window stays open and stays signed in."""
+    try:
+        _page.close()
+    except Exception:
+        pass
     try:
         _browser.close()
     except Exception:
@@ -306,10 +324,26 @@ def auto_login(page):
     sys.exit("Couldn't finish signing in to GameChanger.")
 
 
+def looks_signed_out(page_text):
+    """GameChanger shows public teams to anyone, with 'Sign In' and 'Join Us' in the page's top bar."""
+    return bool(re.search(r"\bSign In\b.*\bJoin Us\b", page_text[:300], re.S))
+
+
+def games_show(page, seconds=30):
+    """Wait for the schedule's games to appear while signed in. The page can be slow, and being slow isn't being
+    signed out; a signed-out visitor sees the games too, but none of the player's clips."""
+    end = time.time() + seconds
+    while True:
+        if any(UUID_RE.search(a["href"]) for a in game_links(page)):
+            return not looks_signed_out(page.evaluate("() => document.body.innerText") or "")
+        if "/login" in page.url or time.time() >= end:
+            return False
+        page.wait_for_timeout(500)
+
+
 def ensure_logged_in(page):
     page.goto(SCHEDULE_URL, wait_until="domcontentloaded")
-    page.wait_for_timeout(5000)
-    if any(UUID_RE.search(a["href"]) for a in game_links(page)):
+    if games_show(page):
         return
     if _GC_LOGIN:
         auto_login(page)
@@ -317,12 +351,15 @@ def ensure_logged_in(page):
         page.goto("https://web.gc.com/login", wait_until="domcontentloaded")
         if HEADLESS:
             sys.exit("Not signed in to GameChanger and no login was given (GC_EMAIL / GC_PASSWORD).")
+        page.bring_to_front()
         print("\n>>> Sign in to GameChanger in the browser window that just opened.")
         print(">>> After you're signed in, come back here and press Enter.")
-        input()
+        try:
+            input()
+        except EOFError:
+            sys.exit("GameChanger needs a sign-in. Run this from a window you can type in, and sign in when asked.")
     page.goto(SCHEDULE_URL, wait_until="domcontentloaded")
-    page.wait_for_timeout(5000)
-    if not any(UUID_RE.search(a["href"]) for a in game_links(page)):
+    if not games_show(page):
         sys.exit("Still can't see any games on the schedule page. Check the login and the team URL.")
 
 
@@ -436,6 +473,8 @@ def cmd_scan(args):
         log(f"NOTE: couldn't confirm the team name '{TEAM_NAME}' on the schedule page; check one preview with 'details'.")
 
     existing = {g["id"]: g for g in load_json(GAMES_JSON, [])}
+    if not api and not existing:
+        sys.exit("GameChanger's schedule details didn't load, so no game list was saved. Run again in a minute.")
     games, seen = [], set()
     for a in links:
         m = UUID_RE.search(a["href"])
@@ -1002,7 +1041,18 @@ class QuotaExceeded(Exception):
     pass
 
 
-def youtube():
+def safe_console():
+    """Team names can hold emoji; printing one must never stop a run (Windows consoles and redirected output)."""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="replace")
+        except Exception:
+            pass
+
+
+def youtube(check_only=False):
+    """Signed-in YouTube client. check_only: just test the saved sign-in - never open a sign-in page or remove it."""
+    from google.auth.exceptions import RefreshError
     from google.auth.transport.requests import Request
     from google.oauth2.credentials import Credentials
     from google_auth_oauthlib.flow import InstalledAppFlow
@@ -1017,8 +1067,13 @@ def youtube():
             creds = None
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-        elif HEADLESS:
+            try:
+                creds.refresh(Request())
+            except RefreshError:                         # revoked or too old: sign in again
+                creds = None
+        if creds and creds.valid:
+            pass
+        elif HEADLESS or check_only:
             sys.exit("The YouTube sign-in has expired - connect YouTube again.")
         else:
             print(f"\n>>> A Google sign-in page will open. Choose the '{CHANNEL_NAME}' channel.\n")
@@ -1029,9 +1084,10 @@ def youtube():
     items = yt.channels().list(part="snippet", mine=True).execute().get("items", [])
     handle = (items[0]["snippet"].get("customUrl", "") if items else "").lstrip("@").lower()
     if EXPECTED_HANDLE and handle != EXPECTED_HANDLE:
-        TOKEN.unlink(missing_ok=True)
+        if not check_only:
+            TOKEN.unlink(missing_ok=True)
         sys.exit(f"Signed in to channel '@{handle}', not '@{EXPECTED_HANDLE}'. Run again and pick the right channel.")
-    log(f"YouTube: uploading to @{handle}")
+    log(f"YouTube: {'signed in to' if check_only else 'uploading to'} @{handle}")
     return yt
 
 
@@ -1465,6 +1521,7 @@ def cmd_details(args):
 
 
 def main():
+    safe_console()
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("scan")

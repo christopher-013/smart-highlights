@@ -1,11 +1,12 @@
 import shutil, subprocess, sys, tempfile
 from pathlib import Path
+import imageio_ffmpeg
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "engine"))
 import sh_config, smart_cut
 
 
 def test_player_url():
-    ids = sh_config.parse_player_url("https://web.gc.com/teams/AbC123/2024-fall-team-12u/players/abcdef12-3456-4abc-8def-1234567890ab?tab=clips")
+    ids = sh_config.parse_player_url("https://web.gc.com/teams/AbC123/2024-fall-team-12u/players/ABCDEF12-3456-4abc-8def-1234567890ab?tab=clips")
     assert ids == {"team_id": "AbC123", "team_slug": "2024-fall-team-12u", "player_id": "abcdef12-3456-4abc-8def-1234567890ab"}
     assert sh_config.parse_player_url("web.gc.com/teams/AbC123/players/abcdef12-3456-4abc-8def-1234567890ab")["team_slug"] == ""
     try:
@@ -26,9 +27,7 @@ def test_channel_and_titles():
 
 
 def test_smart_cut_finds_bat_crack():
-    ff = shutil.which("ffmpeg")
-    if not ff:
-        return
+    ff = shutil.which("ffmpeg") or imageio_ffmpeg.get_ffmpeg_exe()
     d = Path(tempfile.mkdtemp()) / "clip.mp4"
     # quiet field, a pitch at ~9.5 s, a bat crack at 12 s, then a runner moving for a few seconds
     subprocess.run([ff, "-hide_banner", "-loglevel", "error", "-y",

@@ -12,6 +12,9 @@ Turns a season of GameChanger clips for one player into YouTube highlight reels.
   - `smart_cut.py` - key-play detection, zoom, optional vision-AI check (`anthropic_key.txt`).
   - `sh_config.py` - optional JSON settings file (`SMART_HIGHLIGHTS_CONFIG`), work folder
     (`SMART_HIGHLIGHTS_WORKDIR`), player/channel link parsing, title templates `{player} {team} {season} {n}`.
+  - `make_reel.py` - the local prototype's front door (`Make Highlights.bat`): asks questions, saves
+    `smart_highlights.json` in the team folder, runs `highlights.py`. `run --local` keeps the reel, `--keep` keeps
+    files after uploading, `--limit N` is a trial reel, `check` tests the setup without changing anything.
 - `server/app.py` - FastAPI service: Google OAuth (connect YouTube), jobs (one at a time), emailed-code handoff.
 - `docs/` - GitHub Pages site (static). `docs/config.js` holds the API address (empty = service offline notice).
 - `tests/` - `pytest tests` (needs ffmpeg). `tests/fake_engine.py` stands in for the engine in service tests.
@@ -35,6 +38,14 @@ Change only on purpose, and re-validate against real sample clips when you do.
 - Never commit secrets or personal data: `client_secret*.json`, tokens, `anthropic_key.txt`, cookies,
   browser profiles, downloads, real player names/IDs (see `.gitignore`). Engine settings use placeholders.
 - GameChanger passwords and YouTube tokens in the service live in memory per job only; job folders are deleted.
+
+## Learned the hard way
+- Keep `playwright` current: an old version hangs attaching to a newer Chrome (1.49 vs Chrome 156). Pins in
+  `server/requirements.txt` follow what the real uploads used.
+- GameChanger shows public teams to signed-out visitors, games included. Games on the schedule don't prove a sign-in;
+  `looks_signed_out` does the check. Signed out, the clip list never loads.
+- A clip list that stops early must stop the run (`read_all_pages`): one upload silently had 19 of 109 plays.
+- Clip times are UTC; show the game's date. The engine's Chrome stays open between runs and is reused.
 
 ## Not verified yet
 - Unattended GameChanger sign-in (`auto_login`) and emailed-code flow - selectors are guesses.

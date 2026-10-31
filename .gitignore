@@ -17,3 +17,4 @@ team.json
 *.lock
 server/data/
 .env
+smart_highlights.json

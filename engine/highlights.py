@@ -3,8 +3,13 @@ Player highlight reel from GameChanger clips -> one YouTube video (Unlisted).
 
   py highlights.py list      fetch the player's clips and show which ones go in the reel (changes nothing)
   py highlights.py run       list -> download -> build the reel -> upload Unlisted
+  py highlights.py run --local   the same, but keep the reel on this computer and upload nothing
   py highlights.py build     download and build the reel only (no upload)
   py highlights.py upload    upload an already-built reel
+  py highlights.py check     test the settings, tools and YouTube sign-in (changes and uploads nothing)
+
+  --keep       keep the reel and clips on this computer after uploading
+  --limit N    a quick trial: only the first N plays (gets its own title, never replaces the full reel)
 
 Picks:  batting  - singles, doubles, triples, home runs
         defense  - strikeouts (incl. dropped 3rd strike), outs, fielder's choices, double/triple plays
@@ -52,6 +57,7 @@ QUICK = False
 SMART_ZOOM = 1.2         # quick reel: zoom in gently toward the action (1 = no zoom)
 AI_CHECK = True          # quick reel: let a vision model check each cut, ONLY if anthropic_key.txt is in this folder
 TOP_N = 0                # --top N: keep only the N most exciting plays (0 = all)
+LIMIT = 0                # --limit N: a trial reel of the first N plays (0 = all)
 TOP_TITLE = "Smart Highlights: Top {n} - Player Name - Team Name Fall 2024"
 MIN_READY = 0.9           # don't build/upload the reel unless at least 90% of the picked clips downloaded
 LABEL_SECONDS = 5            # how long the play name / game caption shows at the start of each clip
@@ -171,24 +177,27 @@ class GCSession:
         if not self.pb_headers:
             page.screenshot(path=str(WORK / "clip_page_problem.png"), full_page=False)
 
+    def clip_page(self, offset):
+        """One page of the player's clip list. A page that won't load stops the run: carrying on would
+        quietly make a reel from only part of the season."""
+        sel = dict(self.search_body.get("select") or {}, include_totals=True)
+        body = dict(self.search_body, select=sel, offset=offset, limit=36)
+        last = ""
+        for attempt in range(4):
+            try:
+                r = self.ctx.request.post(f"{API}/clips/search/v2", data=json.dumps(body),
+                                          headers=dict(self.headers, **{"content-type": "application/json"}))
+                data = r.json() if r.ok else None
+                if isinstance(data, dict) and isinstance(data.get("hits"), list):
+                    return data
+                last = f"HTTP {r.status}"
+            except Exception as e:
+                last = str(e)[:200]
+            self.page.wait_for_timeout(2000 * (attempt + 1))
+        sys.exit(f"GameChanger's clip list didn't finish loading ({last}), so nothing was made. Run again in a minute.")
+
     def all_clips(self):
-        clips, page_no, seen = [], 0, set()
-        while True:
-            sel = dict(self.search_body.get("select") or {}, include_totals=True)
-            body = dict(self.search_body, select=sel, offset=page_no, limit=36)
-            r = self.ctx.request.post(f"{API}/clips/search/v2", data=json.dumps(body),
-                                      headers=dict(self.headers, **{"content-type": "application/json"}))
-            data = r.json()
-            hits = [x for x in data.get("hits", []) if x.get("clip_metadata_id") not in seen]
-            seen.update(x.get("clip_metadata_id") for x in hits)
-            clips += hits
-            nxt = data.get("next_offset")
-            total = data.get("total_count")
-            # keep going until GameChanger says there are no more pages
-            if not hits or nxt is None or nxt == page_no or (total is not None and len(clips) >= total):
-                break
-            page_no = nxt
-        return clips
+        return read_all_pages(self.clip_page)
 
     def playback(self, clip):
         """Video address + access pass for one clip, using the website's own request settings."""
@@ -356,6 +365,26 @@ class GCSession:
         gc.close_browser(self.ctx)
 
 
+def read_all_pages(get_page):
+    """Every clip from GameChanger's paged list, or stop if fewer arrive than GameChanger says there are."""
+    clips, offset, seen, received, total = [], 0, set(), 0, None
+    while True:
+        data = get_page(offset)
+        total = data.get("total_count", total)
+        received += len(data.get("hits", []))
+        hits = [x for x in data.get("hits", []) if x.get("clip_metadata_id") not in seen]
+        seen.update(x.get("clip_metadata_id") for x in hits)
+        clips += hits
+        nxt = data.get("next_offset")
+        # keep going until GameChanger says there are no more pages
+        if not hits or nxt is None or nxt == offset or (total is not None and received >= total):
+            break
+        offset = nxt
+    if total is not None and received < total:
+        sys.exit(f"GameChanger listed only {received} of {total} clips, so nothing was made. Run again in a minute.")
+    return clips
+
+
 def stream_of(url):
     """Camera stream folder of a clip, e.g. https://vod-archive.gc.com/ivs/v1/<acct>/<stream>."""
     return url.split("?")[0].split("/clips/")[0]
@@ -394,6 +423,11 @@ def games_by_id():
     return {g["id"]: g for g in gc.load_json(gc.GAMES_JSON, [])}
 
 
+def plain_text(s):
+    """Text the caption font can draw: emoji in a team name would otherwise show up as empty boxes."""
+    return re.sub(r" {2,}", " ", re.sub(r"[^\u0000-\uFFFF]|\uFE0F", "", s)).strip()
+
+
 def caption(c, games):
     g = games.get(c["event_id"], {})
     play = c.get("name") or c["play_metadata"]["play_type"].replace("_", " ").title()
@@ -415,6 +449,15 @@ def fill_titles():
     VIDEO_TITLE = sh_config.fill_title(VIDEO_TITLE, **args)
     QUICK_TITLE = sh_config.fill_title(QUICK_TITLE, **args)
     TOP_TITLE = sh_config.fill_title(TOP_TITLE, n="{n}", **args)
+    REEL = WORK / f"{gc.safe_name(VIDEO_TITLE)}.mp4"
+    NOTE = WORK / f"{gc.safe_name(VIDEO_TITLE)}.txt"
+
+
+def use_limit(limit):
+    """A trial of the first N plays gets its own title and files, so it never replaces the full reel."""
+    global LIMIT, VIDEO_TITLE, REEL, NOTE
+    LIMIT = limit
+    VIDEO_TITLE = f"{VIDEO_TITLE} (first {limit} plays)"
     REEL = WORK / f"{gc.safe_name(VIDEO_TITLE)}.mp4"
     NOTE = WORK / f"{gc.safe_name(VIDEO_TITLE)}.txt"
 
@@ -637,15 +680,20 @@ def cmd_list(args, session=None):
         s.close()
     chosen = pick(clips)
     games = games_by_id()
+    log(f"{len(clips)} clips tagged to {PLAYER_NAME}; {len(chosen)} picked for the reel")
+    if LIMIT:
+        chosen = chosen[:LIMIT]
+        log(f"   trial run: only the first {len(chosen)} plays")
     gc.save_json(CLIPS_JSON, chosen)
     total = sum(c.get("duration") or 60 for c in chosen)
-    log(f"{len(clips)} clips tagged to {PLAYER_NAME}; {len(chosen)} picked for the reel (about {total / 60:.0f} min)")
+    log(f"   about {total / 60:.0f} min of video before trimming")
     from collections import Counter
     counts = Counter(c.get("name") or c["play_metadata"]["play_type"] for c in chosen)
     print("   " + ", ".join(f"{n} {k}" for k, n in counts.most_common()))
     for c in chosen:
         play, line2 = caption(c, games)
-        print(f"   {c['timestamp'][:10]}  {play:<30} {line2}")
+        day = gc.game_date(games.get(c["event_id"], {})) or c["timestamp"][:10]     # the clip's own time is UTC
+        print(f"   {day}  {play:<30} {line2}")
     return chosen
 
 
@@ -723,6 +771,13 @@ def is_blank(path, start=None, length=None):
     return bool(ydif) and max(ydif) < 0.5                # nothing changes at all: a frozen/blank picture
 
 
+def download_clip(pb, cookies, dest):
+    subprocess.run([sys.executable, "-m", "yt_dlp", "--quiet", "--no-warnings", "--no-part",
+                    "--ffmpeg-location", gc.FFMPEG, "--cookies", str(cookies),
+                    "--add-header", "Referer: https://web.gc.com/", "--add-header", "Origin: https://web.gc.com",
+                    "--remux-video", "mp4", "-o", str(dest), pb["url"]], check=True)
+
+
 def build(chosen):
     from playwright.sync_api import sync_playwright
     gc.check_tools()
@@ -734,10 +789,13 @@ def build(chosen):
     clips_dir = WORK / f"clips{tag}"
     clips_dir.mkdir(parents=True, exist_ok=True)
     games = games_by_id()
+    # files are named after the clip, not its place in the list, so a changed list can't mix clips and captions
+    name_of = lambda c: c["clip_metadata_id"]
 
     # 1) video addresses: each clip's video sits next to its thumbnail (.jpg -> .m3u8). Access passes cover a
     #    whole camera stream, so we only need one pass per stream, got by playing one clip from that stream.
-    todo = [(i, c) for i, c in enumerate(chosen, 1) if not (clips_dir / f"{i:03d}.mp4").exists()]
+    todo = [(i, c) for i, c in enumerate(chosen, 1) if not (clips_dir / f"{name_of(c)}.mp4").exists()
+            and not (clips_dir / f"{name_of(c)}.blank").exists()]
     if todo:
         want = {c["clip_metadata_id"] for _, c in todo}
         kinds = {((c.get("name") or "").strip().lower(), ((c.get("sport_metadata") or {}).get("play_side") or "")[:3])
@@ -773,27 +831,25 @@ def build(chosen):
 
     def work(item):
         i, c = item
-        out = clips_dir / f"{i:03d}.mp4"
+        stem = name_of(c)
+        out = clips_dir / f"{stem}.mp4"
         if out.exists():
             return True
-        if (clips_dir / f"{i:03d}.blank").exists():
+        if (clips_dir / f"{stem}.blank").exists():
             return False
         if not c.get("_pb"):
             return False
-        raw = clips_dir / f"{i:03d}.raw.mp4"
-        ck = clips_dir / f"{i:03d}.cookies.txt"
-        lbl = clips_dir / f"{i:03d}.label.txt"
+        raw = clips_dir / f"{stem}.raw.mp4"
+        ck = clips_dir / f"{stem}.cookies.txt"
+        lbl = clips_dir / f"{stem}.label.txt"
         try:
             cookie_file(c["_pb"], ck)
-            subprocess.run([sys.executable, "-m", "yt_dlp", "--quiet", "--no-warnings", "--no-part",
-                            "--ffmpeg-location", gc.FFMPEG, "--cookies", str(ck),
-                            "--add-header", "Referer: https://web.gc.com/", "--add-header", "Origin: https://web.gc.com",
-                            "--remux-video", "mp4", "-o", str(raw), c["_pb"]["url"]], check=True)
+            download_clip(c["_pb"], ck, raw)
             play, line2 = caption(c, games)
             pbp = pbps.get(i)
             line3 = f"\n{pbp['text'][:70]}" if pbp and pbp.get("text") else ""
             with open(lbl, "w", encoding="utf-8", newline="\n") as fh:   # Windows line endings showed as blank lines
-                fh.write(f"{PLAYER_NAME} - {play}\n{line2}{line3}")
+                fh.write(plain_text(f"{PLAYER_NAME} - {play}\n{line2}{line3}"))
             start = length = None
             crop = ""
             if QUICK:
@@ -808,8 +864,8 @@ def build(chosen):
                         what = (c.get("name") or pt) + (f" - {pbp['text']} (pitches: {', '.join(pbp['pitches'])})"
                                                          if pbp else "")
                         ai = smart_cut.ai_refine(raw, gc.FFMPEG, what, cut, ROOT,
-                                                 clips_dir / f"{i:03d}.frames.png", font_arg())
-                        (clips_dir / f"{i:03d}.frames.png").unlink(missing_ok=True)
+                                                 clips_dir / f"{stem}.frames.png", font_arg())
+                        (clips_dir / f"{stem}.frames.png").unlink(missing_ok=True)
                         if ai:
                             cut.update(start=ai["start"], end=ai["end"], key=ai["key"])
                             how += f" + vision check ({ai['note']})"
@@ -822,11 +878,11 @@ def build(chosen):
                     start = max(0.0, off - before)
                     length = min(dur, off + after) - start
                     excitement = smart_cut.PLAY_WEIGHT.get((pt or "").lower(), 3) * 2 + (3 if pbp and pbp["scored"] else 0)
-                timing[i] = {"play": c.get("name"), "clip_len": round(dur, 1), "play_at": round(off, 1),
+                timing[stem] = {"play": c.get("name"), "clip_len": round(dur, 1), "play_at": round(off, 1),
                              "from": how, "kept": [round(start, 1), round(start + length, 1)],
                              "excitement": excitement, "details": cut, "play_by_play": pbp}
             if is_blank(raw, start, length):
-                (clips_dir / f"{i:03d}.blank").write_text("black/blank video", encoding="utf-8")
+                (clips_dir / f"{stem}.blank").write_text("black/blank video", encoding="utf-8")
                 log(f"   clip {i} ({c.get('name')}) is a blank/black video - left out")
                 return False
             return normalize(raw, out, lbl, start, length, crop)
@@ -848,23 +904,17 @@ def build(chosen):
     tfile = clips_dir / "quick_timing.json"
     old = gc.load_json(tfile, {}) if QUICK else {}
     if QUICK and timing:
-        old.update({str(k): v for k, v in timing.items()})
+        old.update(timing)
         gc.save_json(tfile, old)
         shutil.copy(tfile, WORK / "quick_timing.json")
         est = sum(1 for v in timing.values() if v["from"].startswith("estimate"))
         if est:
             log(f"   {est} clip(s) had no stream clock; their play time was estimated")
-    parts = [(i, c, clips_dir / f"{i:03d}.mp4") for i, c in enumerate(chosen, 1)]
+    parts = [(i, c, clips_dir / f"{name_of(c)}.mp4") for i, c in enumerate(chosen, 1)]
     parts = [x for x in parts if x[2].exists()]
-    if TOP_N and len(parts) > TOP_N:                     # most exciting plays only, still in game order
-        ranked = sorted(parts, key=lambda x: -((old.get(str(x[0])) or {}).get("excitement") or 0))
-        keep = {x[0] for x in ranked[:TOP_N]}
-        log(f"   keeping the {TOP_N} most exciting of {len(parts)} plays")
-        chosen = [c for i, c in enumerate(chosen, 1) if i in keep]
-        parts = [x for x in parts if x[0] in keep]
     if not parts:
         sys.exit("No clips could be prepared.")
-    blank = sum(1 for i, _ in enumerate(chosen, 1) if (clips_dir / f"{i:03d}.blank").exists())
+    blank = sum(1 for c in chosen if (clips_dir / f"{name_of(c)}.blank").exists())
     if blank:
         log(f"   {blank} blank/black clip(s) left out")
     missing = len(chosen) - len(parts) - blank
@@ -873,6 +923,11 @@ def build(chosen):
     if len(parts) < MIN_READY * (len(chosen) - blank):
         sys.exit(f"Only {len(parts)} of {len(chosen)} clips are ready, so the reel was NOT built or uploaded. "
                  f"Run again to retry the missing clips (finished clips are kept).")
+    if TOP_N and len(parts) > TOP_N:                     # most exciting plays only, still in game order
+        ranked = sorted(parts, key=lambda x: -((old.get(name_of(x[1])) or {}).get("excitement") or 0))
+        keep = {x[0] for x in ranked[:TOP_N]}
+        log(f"   keeping the {TOP_N} most exciting of {len(parts)} plays")
+        parts = [x for x in parts if x[0] in keep]
 
     # 3) join (all clips share one format now, so this is lossless)
     lst = WORK / "reel.concat.txt"
@@ -883,15 +938,23 @@ def build(chosen):
     lst.unlink(missing_ok=True)
 
     # 4) chapters for the description (YouTube turns "0:00 ..." lines into chapters)
-    chapters, t = [], 0.0
+    chapters, unsure, t = [], [], 0.0
     for _, c, p in parts:
         play, line2 = caption(c, games)
         m, s_ = divmod(int(t), 60)
         h, m = divmod(m, 60)
         stamp = f"{h}:{m:02d}:{s_:02d}" if h else f"{m}:{s_:02d}"
         chapters.append(f"{stamp} {play} - {line2}")
+        if QUICK and not re.search(r"bat crack|strike-three", (old.get(name_of(c)) or {}).get("from", "")):
+            unsure.append(chapters[-1])
         t += clip_seconds(p)
     gc.save_json(WORK / "chapters.json", chapters)
+    review = WORK / "check these clips.txt"
+    review.unlink(missing_ok=True)
+    if unsure:
+        review.write_text("No bat crack or strike-three pitch was found for these clips, so they may show the wrong "
+                          "moment. Times are from the start of the reel:\n\n" + "\n".join(unsure) + "\n", encoding="utf-8")
+        log(f"   {len(unsure)} clip(s) were cut with less certainty - worth a look: {review}")
     log(f"Reel ready: {REEL} ({REEL.stat().st_size / 1e9:.2f} GB, {t / 60:.0f} min)")
 
 
@@ -927,7 +990,7 @@ def cmd_upload(args):
     log(f"   uploaded: https://youtu.be/{vid}")
     NOTE.write_text(f"{VIDEO_TITLE}\nUploaded {dt.datetime.now():%Y-%m-%d %H:%M} as {gc.PRIVACY}: "
                     f"https://youtu.be/{vid}\n", encoding="utf-8")
-    if ADD_TO_TEAM_PLAYLIST:
+    if ADD_TO_TEAM_PLAYLIST and not LIMIT:              # a trial stays out of the team's playlist
         state = gc.load_json(gc.STATE_JSON, {})
         key = f"highlights-{PLAYER_ID}" + (f"-top{TOP_N}" if TOP_N else "-quick" if QUICK else "")
         state[key] = {"title": VIDEO_TITLE, "date": "9999-12-31", "videos": [vid]}   # sorts after all games
@@ -1066,9 +1129,13 @@ def match_play(c, used):
 
     def score(pl):
         n = (pl.get("name_template") or {}).get("template", "").lower()
+        if want == "caught stealing" and n == "runner out":
+            return 1
         return 2 if n == want else 1 if (want and (want in n or n in want or ("out" in want and "out" in n))) else 0
 
     best = max(cands, key=score)
+    if not score(best):                                # no sentence beats someone else's play, or one that contradicts
+        return None
     used.add((c.get("event_id"), best.get("order")))
     text = ((best.get("final_details") or [{}])[0]).get("template", "")
     text = re.sub(r"\$\{([^}]+)\}", lambda m: names.get(m.group(1), "") or "", text).strip()
@@ -1084,10 +1151,48 @@ def cmd_build(args):
 
 
 def cmd_run(args):
+    if args.local:
+        cmd_build(args)
+        log(f"Kept on this computer, nothing uploaded: {REEL}")
+        return
     if NOTE.exists() and not args.again:
         sys.exit(f"Already uploaded: {NOTE.read_text(encoding='utf-8').strip()}")
     cmd_build(args)
     cmd_upload(args)                                  # uploads straight away, Unlisted
+
+
+def cmd_check(args):
+    """Is everything ready? Reads settings and tests the saved sign-in; changes and uploads nothing."""
+    problems = []
+
+    def report(name, ok, detail):
+        print(f"   {'ok     ' if ok else 'PROBLEM'}  {name}: {detail}")
+        if not ok:
+            problems.append(name)
+
+    report("player", PLAYER_ID != "YOUR_PLAYER_ID", PLAYER_NAME)
+    report("team", gc.TEAM_ID != "YOUR_TEAM_ID", gc.TEAM_NAME or gc.TEAM_ID)
+    report("work folder", True, str(ROOT))
+    chrome = gc.find_chrome()
+    report("Google Chrome", bool(chrome), chrome or "not found - install it to read GameChanger")
+    try:
+        gc.check_tools()
+        report("video tools", True, gc.FFMPEG)
+    except SystemExit as e:
+        report("video tools", False, str(e))
+    if gc.TOKEN.exists() or gc.CLIENT_SECRET.exists():
+        try:
+            gc.youtube(check_only=True)
+            report("YouTube sign-in", True, "works (only needed for uploading)")
+        except SystemExit as e:
+            report("YouTube sign-in", False, str(e))
+        except Exception as e:
+            report("YouTube sign-in", False, f"{e.__class__.__name__}: {str(e)[:150]}")
+    else:
+        print(f"   note     YouTube: no {gc.CLIENT_SECRET.name} here - fine for keeping reels on this computer")
+    if problems:
+        sys.exit(f"Needs attention: {', '.join(problems)}")
+    log("Ready.")
 
 
 _LOCK = None
@@ -1121,19 +1226,32 @@ def wait_for_other_runs():
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("check")
     for name in ("list", "build", "upload", "run", "sample"):
         sp = sub.add_parser(name)
         sp.add_argument("--quick", action="store_true", help="short reel: just the key play from each clip")
         sp.add_argument("--top", type=int, default=0, help="with --quick: only the N most exciting plays")
         sp.add_argument("--caption", choices=["always", "brief"],
                         help="caption on for the whole clip, or just the first few seconds")
+        if name != "sample":
+            sp.add_argument("--limit", type=int, default=0, help="a trial reel of only the first N plays")
+        if name == "run":
+            sp.add_argument("--local", action="store_true", help="keep the reel on this computer, upload nothing")
         if name in ("upload", "run"):
             sp.add_argument("--again", action="store_true",
                             help="make and upload a new reel even if one was uploaded before")
+            sp.add_argument("--keep", action="store_true", help="keep the reel and clips here after uploading")
     args = ap.parse_args()
+    gc.safe_console()
     global CAPTION_ALWAYS
+    if args.cmd == "check":
+        return cmd_check(args)
+    if PLAYER_ID == "YOUR_PLAYER_ID" or gc.TEAM_ID == "YOUR_TEAM_ID":
+        sys.exit("No player is set yet. Start with 'Make Highlights.bat', or see 'Run it on your own computer' in the README.")
     if args.cmd != "list":
         wait_for_other_runs()
+    if getattr(args, "keep", False):
+        gc.DELETE_AFTER_UPLOAD = False
     if getattr(args, "caption", None):
         CAPTION_ALWAYS = args.caption == "always"
     if not gc.GAMES_JSON.exists() or not gc.TEAM_NAME:
@@ -1142,6 +1260,8 @@ def main():
     fill_titles()
     if getattr(args, "quick", False) or getattr(args, "top", 0):
         use_quick_mode(getattr(args, "top", 0))
+    if getattr(args, "limit", 0):
+        use_limit(args.limit)
     {"list": cmd_list, "build": cmd_build, "upload": cmd_upload, "run": cmd_run, "sample": cmd_sample}[args.cmd](args)
 
 

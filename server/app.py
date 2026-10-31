@@ -99,7 +99,14 @@ def save_job(job):
     p = _job_path(job["id"])
     tmp = p.with_suffix(".tmp")
     tmp.write_text(json.dumps(job, indent=1), encoding="utf-8")
-    tmp.replace(p)
+    for attempt in range(20):
+        try:
+            tmp.replace(p)
+            return
+        except PermissionError:                     # Windows: someone is reading the progress file right now
+            if attempt == 19:
+                raise
+            time.sleep(0.1)
 
 
 def update_job(job_id, **changes):
@@ -349,6 +356,8 @@ def worker():
         job_id = _queue.get()
         try:
             process(job_id)
+        except Exception as e:                      # one job's failure must never stop the jobs behind it
+            print(f"Job {job_id} ended with an error: {e}", flush=True)
         finally:
             cleanup_old()
             _queue.task_done()

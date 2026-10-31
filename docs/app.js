@@ -1,168 +1,117 @@
 (() => {
-  const API = (window.SMART_HIGHLIGHTS_API || "").replace(/\/$/, "");
   const $ = (id) => document.getElementById(id);
-  const PLAYER_RE = /web\.gc\.com\/teams\/[A-Za-z0-9]+(\/[^/?#]+)?\/players\/[0-9a-fA-F-]{36}/;
-  const KEEP = ["player_url", "player_name", "season", "sport", "caption", "privacy", "top_n"];
-
-  const store = {
-    get(k) { try { return sessionStorage.getItem("sh_" + k); } catch { return null; } },
-    set(k, v) { try { sessionStorage.setItem("sh_" + k, v); } catch { /* private window: fine */ } },
-    del(k) { try { sessionStorage.removeItem("sh_" + k); } catch { /* ignore */ } },
-  };
-
-  // ---- coming back from Google (connect YouTube) or to a job's progress page
-  const hash = new URLSearchParams(location.hash.slice(1));
-  if (hash.get("yt")) {
-    store.set("yt", hash.get("yt"));
-    store.set("channel", hash.get("channel") || "");
-    store.set("channel_title", hash.get("channel_title") || "");
-    history.replaceState(null, "", location.pathname + "#maker");
-  }
-  if (hash.get("yt_error")) {
-    $("yt-status").textContent = hash.get("yt_error") === "no_channel"
-      ? "That Google account has no YouTube channel. Connect the account that owns the channel."
-      : "YouTube wasn't connected. Try again.";
-    history.replaceState(null, "", location.pathname + "#maker");
-  }
-
-  // ---- restore what was typed before going to Google (never the password)
-  for (const k of KEEP) { const v = store.get(k); if (v !== null && $(k)) $(k).value = v; }
-  const savedReels = store.get("reels");
-  if (savedReels) document.querySelectorAll("input[name=reel]").forEach((c) => { c.checked = savedReels.split(",").includes(c.value); });
-  const remember = () => {
-    for (const k of KEEP) if ($(k)) store.set(k, $(k).value);
-    store.set("reels", [...document.querySelectorAll("input[name=reel]:checked")].map((c) => c.value).join(","));
-  };
-  $("form").addEventListener("input", remember);
-
-  function showYouTube() {
-    const sid = store.get("yt");
-    const ch = store.get("channel"), title = store.get("channel_title");
-    if (sid) {
-      $("yt-status").className = "status ok";
-      $("yt-status").textContent = "Connected: " + (ch ? "@" + ch : title || "your channel");
-      $("yt-connect").textContent = "Use a different channel";
-    }
-  }
-  showYouTube();
-
-  if (!API) {
-    $("offline").hidden = false;
-    $("submit").disabled = true;
-    $("yt-connect").disabled = true;
-  }
-
-  $("yt-connect").addEventListener("click", () => {
-    remember();
-    location.href = API + "/auth/google/start?return=" + encodeURIComponent(location.origin + location.pathname);
-  });
-
-  // ---- start a reel
-  $("player_url").addEventListener("blur", () => {
-    const v = $("player_url").value.trim();
-    $("player_url-error").textContent = v && !PLAYER_RE.test(v)
-      ? "This should be a player's page on web.gc.com, like https://web.gc.com/teams/…/players/…" : "";
-  });
-
-  $("form").addEventListener("submit", async (e) => {
-    e.preventDefault();
-    const err = $("form-error");
-    err.textContent = "";
-    const reels = [...document.querySelectorAll("input[name=reel]:checked")].map((c) => c.value);
-    const problems = [];
-    if (!store.get("yt")) problems.push("Connect your YouTube channel (step 1).");
-    if (!PLAYER_RE.test($("player_url").value)) problems.push("Paste the player's GameChanger link (step 2).");
-    if (!$("player_name").value.trim()) problems.push("Enter the name for the captions (step 2).");
-    if (!reels.length) problems.push("Pick at least one reel (step 3).");
-    if (!$("gc_email").value || !$("gc_password").value) problems.push("Enter your GameChanger email and password (step 4).");
-    if (!$("rights").checked) problems.push("Confirm you're allowed to use and post these videos (step 4).");
-    if (problems.length) { err.textContent = problems.join(" "); return; }
-
-    $("submit").disabled = true;
-    $("submit").textContent = "Starting…";
-    try {
-      const r = await fetch(API + "/api/jobs", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          player_url: $("player_url").value.trim(), player_name: $("player_name").value.trim(),
-          season: $("season").value.trim(), sport: $("sport").value, reels,
-          top_n: Number($("top_n").value) || 10, caption: $("caption").value, privacy: $("privacy").value,
-          yt_session: store.get("yt"), gc_email: $("gc_email").value.trim(), gc_password: $("gc_password").value,
-        }),
-      });
-      const data = await r.json().catch(() => ({}));
-      if (!r.ok) throw new Error(typeof data.detail === "string" ? data.detail : "The reel couldn't be started. Check the details above.");
-      $("gc_password").value = "";
-      location.hash = "job=" + data.id;
-      watch(data.id);
-    } catch (ex) {
-      err.textContent = ex.message || "The service couldn't be reached. Try again in a minute.";
-      if (/YouTube/.test(err.textContent)) { store.del("yt"); $("yt-status").textContent = ""; }
-    } finally {
-      $("submit").disabled = false;
-      $("submit").textContent = "Make my highlight reel";
-    }
-  });
-
-  // ---- progress
-  const NAMES = { smart: "Smart Highlights", top: "Top plays", full: "Full clips" };
+  const trial = Number(new URLSearchParams(location.search).get("limit")) || 0;     // ?limit=4 makes a short trial reel
+  const ORDER = ["Reading the team schedule", "Finding the player's clips", "Downloading and cutting clips", "Joining the reel"];
+  let dismissed = false;
   let timer = null;
 
-  function render(j) {
-    $("form").hidden = true;
+  async function post(path, body) {
+    const r = await fetch(path, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}),
+    });
+    if (!r.ok) {
+      const data = await r.json().catch(() => ({}));
+      throw new Error(typeof data.detail === "string" ? data.detail : "That didn't work. Please try again.");
+    }
+  }
+
+  function showPlayer(s) {
+    const p = s.player;
+    const ready = Boolean(p && !p.reading && !p.signed_out);
+    const nameKnown = ready && Boolean(p.name);
+    $("player").hidden = !nameKnown;
+    $("name-row").hidden = !ready || nameKnown;
+    if (nameKnown) {
+      $("player-name").textContent = p.name;
+      $("player-team").textContent = [p.team, p.season].filter(Boolean).join(" · ");
+      $("player-clips").textContent = p.clips ? p.clips + " clips" : "";
+    }
+    $("make").disabled = !ready;
+    const st = $("look");
+    st.className = "status";
+    if (ready) {
+      st.textContent = "";
+    } else if (p && p.signed_out) {
+      st.textContent = "Sign in to GameChanger in the window that opened.";
+    } else if (!s.chrome && s.opened) {
+      st.textContent = "The GameChanger window was closed. Open it again to continue.";
+    } else if (s.chrome && s.opened) {
+      st.textContent = "Waiting for you to open your player's page…";
+    } else {
+      st.textContent = "";
+    }
+    $("open").textContent = s.chrome && s.opened ? "Open GameChanger again" : "Open GameChanger";
+    $("open").className = "btn " + (s.chrome && s.opened ? "ghost" : "go");
+  }
+
+  function showJob(j) {
+    const over = j.status !== "running";
+    $("start").hidden = true;
     $("job").hidden = false;
-    $("job-title").textContent = j.status === "done" ? "Your reel is on YouTube"
-      : j.status === "failed" ? "The reel couldn't be finished" : "Making " + (j.player_name || "your") + "'s reel";
-    $("job-stage").textContent = j.status === "queued"
-      ? `Waiting for its turn (number ${j.position || 1} in line)` : j.stage || "";
-    const items = [...document.querySelectorAll("#track li")];
-    const at = items.findIndex((li) => li.dataset.k === j.stage);
-    items.forEach((li, i) => {
+    $("job-title").textContent = j.status === "done" ? j.player + "'s reel is ready"
+      : j.status === "failed" ? "The reel couldn't be finished" : "Making " + j.player + "'s reel";
+    $("job-stage").textContent = j.status === "done"
+      ? "Saved on this computer" + (j.length ? " · " + j.length : "") : j.stage;
+    $("job-stage").className = "stage" + (j.status === "failed" ? " error" : "");
+    const at = ORDER.indexOf(j.stage);
+    document.querySelectorAll("#track li").forEach((li, i) => {
       li.className = j.status === "done" || (at >= 0 && i < at) ? "done" : i === at ? "now" : "";
     });
-    $("code-form").hidden = !j.needs_code;
-    $("results").innerHTML = "";
-    for (const res of j.results || []) {
-      const li = document.createElement("li");
-      const a = document.createElement("a");
-      a.href = res.url; a.textContent = (NAMES[res.reel] || "Reel") + ": " + res.url; a.target = "_blank"; a.rel = "noopener";
-      li.append(a); $("results").append(li);
+    $("track").hidden = j.status === "failed";
+    const counting = !over && j.total > 0;
+    $("count").hidden = !counting;
+    if (counting) {
+      $("bar").max = j.total; $("bar").value = j.done;
+      $("count-text").textContent = j.done + " of " + j.total + " clips";
     }
-    $("log").textContent = (j.log || []).join("\n");
-    const over = j.status === "done" || j.status === "failed";
-    $("again").hidden = !over;
     $("job-wait").hidden = over;
-    if (j.status === "done") $("job-stage").textContent = "Here are the links:";
+    $("done").hidden = j.status !== "done";
+    $("unsure").hidden = !(j.status === "done" && j.unsure);
+    $("unsure").textContent = j.unsure + (j.unsure === 1 ? " clip was" : " clips were")
+      + " harder to cut and may show the wrong moment. They're listed in “check these clips.txt” next to the reel.";
+    $("log").textContent = (j.log || []).join("\n");
+    $("again").hidden = !over;
   }
 
-  async function poll(id) {
-    try {
-      const r = await fetch(API + "/api/jobs/" + encodeURIComponent(id));
-      if (r.status === 404) { $("job").hidden = false; $("job-title").textContent = "That reel isn't here any more"; $("job-stage").textContent = "Progress pages are kept for 7 days."; return; }
-      const j = await r.json();
-      render(j);
-      if (j.status === "done" || j.status === "failed") return;
-    } catch { $("job-stage").textContent = "Can't reach the service right now - still trying…"; }
-    timer = setTimeout(() => poll(id), 4000);
-  }
+  function showStart() { $("start").hidden = false; $("job").hidden = true; }
 
-  function watch(id) { clearTimeout(timer); $("maker").scrollIntoView({ behavior: "smooth" }); poll(id); }
-
-  $("code-form").addEventListener("submit", async (e) => {
-    e.preventDefault();
-    const id = new URLSearchParams(location.hash.slice(1)).get("job");
-    const r = await fetch(API + "/api/jobs/" + encodeURIComponent(id) + "/code", {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ code: $("code").value.trim() }),
-    });
-    if (r.ok) { $("code").value = ""; $("code-form").hidden = true; }
-  });
-
-  $("again").addEventListener("click", () => {
+  async function refresh() {
     clearTimeout(timer);
-    history.replaceState(null, "", location.pathname + "#maker");
-    $("job").hidden = true; $("form").hidden = false;
+    try {
+      const s = await (await fetch("api/status")).json();
+      $("offline").hidden = true;
+      $("maker").hidden = false;
+      if (s.job && !(dismissed && s.job.status !== "running")) showJob(s.job);
+      else showStart();
+      showPlayer(s);
+    } catch {
+      $("offline").hidden = false;
+      $("maker").hidden = true;
+    }
+    timer = setTimeout(refresh, 2000);
+  }
+
+  $("open").addEventListener("click", async () => {
+    $("error").textContent = "";
+    $("open").disabled = true;
+    try { await post("api/open"); } catch (ex) { $("error").textContent = ex.message; }
+    $("open").disabled = false;
+    refresh();
   });
 
-  const jobId = hash.get("job");
-  if (jobId && API) watch(jobId);
+  $("make").addEventListener("click", async () => {
+    $("error").textContent = "";
+    $("make").disabled = true;
+    try {
+      await post("api/reels", { player_name: $("name-row").hidden ? "" : $("typed-name").value.trim(), limit: trial });
+      dismissed = false;
+    } catch (ex) { $("error").textContent = ex.message; }
+    refresh();
+  });
+
+  $("watch").addEventListener("click", () => post("api/reel/open").catch((ex) => { $("unsure").hidden = false; $("unsure").textContent = ex.message; }));
+  $("show").addEventListener("click", () => post("api/reel/show").catch((ex) => { $("unsure").hidden = false; $("unsure").textContent = ex.message; }));
+  $("again").addEventListener("click", () => { dismissed = true; refresh(); });
+
+  refresh();
 })();

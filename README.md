@@ -33,9 +33,21 @@ py -3.12 -m venv .venv
 .venv\Scripts\python.exe -m pip install -r server\requirements.txt
 ```
 
-Then double-click **Make Highlights.bat**. It asks for a team folder, the player's GameChanger link, which reel
-you want, and whether to keep it on this computer or upload it. Answers are saved in the team folder as
-`smart_highlights.json`. If a sign-in is needed, sign in to GameChanger in the Chrome window that comes up.
+Then double-click **Open Smart Highlights.bat** and, on the page that opens:
+
+1. Click **Open GameChanger**. Sign in if it asks, and go to your player's page.
+2. Come back to the page. It shows the player it found, with nothing to type. Click **Make highlight reel**.
+
+The Smart Highlights reel stays on this computer, in `Smart Highlights\<team>\highlights\<Player>_quick\` in your
+home folder. Set `SMART_HIGHLIGHTS_HOME` to keep it somewhere else. Adding `?limit=4` to the page's address makes a
+short trial reel. Top 10, full clips and uploading to YouTube are the next milestone for this page.
+
+### Or answer questions in a command window
+
+**Make Highlights.bat** does all of it today, including the other reels and uploading. It asks for a team folder,
+the player's GameChanger link, which reel you want, and whether to keep it on this computer or upload it. Answers
+are saved in the team folder as `smart_highlights.json`. If a sign-in is needed, sign in to GameChanger in the
+Chrome window that comes up.
 
 - Reels are kept in `<team folder>\highlights\<Player>_quick\` (or `<Player>\` for full clips).
 - Uploading needs a Google Cloud OAuth client (type *Desktop app*, YouTube Data API v3 enabled) saved in the team
@@ -77,7 +89,7 @@ docker run -p 8000:8000 -v sh-data:/data \
 - Google Cloud: an OAuth client of type *Web application* with redirect URI
   `<PUBLIC_API_URL>/auth/google/callback`, and YouTube Data API v3 enabled. Until Google verifies the app, only
   test users you add (up to 100) can connect a channel.
-- Set `window.SMART_HIGHLIGHTS_API` in `docs/config.js` to the `PUBLIC_API_URL`.
+- The page in `docs/` now talks to the local app, so the hosted service has no page until it gets one again.
 - GameChanger passwords and YouTube sign-ins are kept in memory for one job only. Each job's folder (videos,
   browser profile, YouTube token) is deleted when it ends; progress records are deleted after 7 days.
 

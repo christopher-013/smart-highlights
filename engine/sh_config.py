@@ -24,6 +24,7 @@ SMART_HIGHLIGHTS_WORKDIR (optional) is the folder for downloads, logins and note
 import json
 import os
 import re
+import shutil
 from pathlib import Path
 
 PLAYER_URL_RE = re.compile(
@@ -38,6 +39,25 @@ def parse_player_url(url):
         raise ValueError("That doesn't look like a GameChanger player link "
                          "(https://web.gc.com/teams/.../players/...).")
     return {"team_id": m.group(1), "team_slug": m.group(2) or "", "player_id": m.group(3).lower()}
+
+
+def looks_signed_out(page_text):
+    """GameChanger shows public teams to anyone, with 'Sign In' and 'Join Us' in the page's top bar."""
+    return bool(re.search(r"\bSign In\b.*\bJoin Us\b", page_text[:300], re.S))
+
+
+def find_chrome():
+    candidates = [
+        Path(os.environ.get("PROGRAMFILES", r"C:\Program Files")) / "Google/Chrome/Application/chrome.exe",
+        Path(os.environ.get("PROGRAMFILES(X86)", r"C:\Program Files (x86)")) / "Google/Chrome/Application/chrome.exe",
+        Path(os.environ.get("LOCALAPPDATA", "")) / "Google/Chrome/Application/chrome.exe",
+        Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
+        Path("/usr/bin/google-chrome"), Path("/usr/bin/google-chrome-stable"),
+    ]
+    for c in candidates:
+        if c.exists():
+            return str(c)
+    return shutil.which("chrome") or shutil.which("google-chrome") or shutil.which("chromium")
 
 
 def parse_channel(url):

@@ -177,18 +177,8 @@ _browser = None
 _page = None
 
 
-def find_chrome():
-    candidates = [
-        Path(os.environ.get("PROGRAMFILES", r"C:\Program Files")) / "Google/Chrome/Application/chrome.exe",
-        Path(os.environ.get("PROGRAMFILES(X86)", r"C:\Program Files (x86)")) / "Google/Chrome/Application/chrome.exe",
-        Path(os.environ.get("LOCALAPPDATA", "")) / "Google/Chrome/Application/chrome.exe",
-        Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
-        Path("/usr/bin/google-chrome"), Path("/usr/bin/google-chrome-stable"),
-    ]
-    for c in candidates:
-        if c.exists():
-            return str(c)
-    return shutil.which("chrome") or shutil.which("google-chrome") or shutil.which("chromium")
+find_chrome = sh_config.find_chrome
+looks_signed_out = sh_config.looks_signed_out
 
 
 def open_browser(p, headless=False):
@@ -322,11 +312,6 @@ def auto_login(page):
         if err:
             sys.exit("GameChanger didn't accept the sign-in: " + (err.inner_text() or "").strip()[:200])
     sys.exit("Couldn't finish signing in to GameChanger.")
-
-
-def looks_signed_out(page_text):
-    """GameChanger shows public teams to anyone, with 'Sign In' and 'Join Us' in the page's top bar."""
-    return bool(re.search(r"\bSign In\b.*\bJoin Us\b", page_text[:300], re.S))
 
 
 def games_show(page, seconds=30):

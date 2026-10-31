@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Smart Highlights</title>
-<meta name="description" content="Turn a season of GameChanger clips into one YouTube highlight reel, cut to the key play with a caption on every clip.">
+<meta name="description" content="Turn a season of GameChanger clips into one highlight reel, cut to the key play with a caption on every clip.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700;800&family=Barlow:wght@400;500;600&display=swap" rel="stylesheet">
@@ -21,7 +21,7 @@
   <section class="hero">
     <div class="hero-text">
       <h1>A whole season of GameChanger clips, cut down to the plays that matter.</h1>
-      <p class="lede">Paste your player's GameChanger link and pick your YouTube channel. Smart Highlights finds the key moment in every clip — the crack of the bat, the strike-three pitch — trims to the windup and the result, adds a caption, and uploads one reel to your channel.</p>
+      <p class="lede">Smart Highlights finds the key moment in every clip, trims to the windup and the result, adds a caption, and joins them into one video on your computer.</p>
     </div>
     <figure class="frame" aria-label="Example of a clip in a Smart Highlights reel">
       <div class="field" aria-hidden="true">
@@ -39,111 +39,53 @@
   </section>
 
   <div id="offline" class="notice" hidden>
-    The reel service isn't running yet, so reels can't be made from this page right now. You can still read how it works below, or run the tool on your own computer from the <a href="https://github.com/christopher-013/smart-highlights">GitHub repository</a>.
+    Smart Highlights runs on your own computer. Start it with <b>Open Smart Highlights.bat</b> from the <a href="https://github.com/christopher-013/smart-highlights">GitHub repository</a>, and this page will open by itself.
   </div>
 
-  <section id="maker" class="maker" aria-labelledby="maker-title">
+  <section id="maker" class="maker" aria-labelledby="maker-title" hidden>
     <h2 id="maker-title">Make a reel</h2>
 
-    <form id="form" novalidate>
-      <fieldset class="step">
-        <legend><span class="n">1</span>Your YouTube channel</legend>
-        <p class="help">The reel is uploaded to this channel. You'll sign in with Google and choose the channel.</p>
+    <div id="start">
+      <div class="step">
+        <h3><span class="n">1</span>Find your player</h3>
+        <p class="help">GameChanger opens in its own window. Sign in if it asks, go to your player's page, then come back here.</p>
         <div class="yt-row">
-          <button type="button" id="yt-connect" class="btn ghost">Connect YouTube channel</button>
-          <p id="yt-status" class="status" role="status"></p>
+          <button type="button" id="open" class="btn go">Open GameChanger</button>
+          <p id="look" class="status" role="status"></p>
         </div>
-      </fieldset>
-
-      <fieldset class="step">
-        <legend><span class="n">2</span>The player</legend>
-        <label for="player_url">GameChanger player link</label>
-        <input id="player_url" name="player_url" type="url" required autocomplete="off"
-               placeholder="https://web.gc.com/teams/…/players/…">
-        <p class="help">Open the player on web.gc.com and copy the address from the browser.</p>
-        <p class="error" id="player_url-error" role="alert"></p>
-        <div class="row">
-          <div>
-            <label for="player_name">Name on the captions</label>
-            <input id="player_name" name="player_name" required maxlength="80" placeholder="Jane Doe">
-          </div>
-          <div>
-            <label for="season">Season</label>
-            <input id="season" name="season" maxlength="40" placeholder="Fall 2024">
-          </div>
-          <div>
-            <label for="sport">Sport</label>
-            <select id="sport" name="sport"><option value="softball">Softball</option><option value="baseball">Baseball</option></select>
-          </div>
+        <div id="player" class="player" hidden>
+          <b id="player-name"></b>
+          <span id="player-team"></span>
+          <span id="player-clips"></span>
         </div>
-      </fieldset>
-
-      <fieldset class="step">
-        <legend><span class="n">3</span>The reels</legend>
-        <label class="check"><input type="checkbox" name="reel" value="smart" checked>
-          <span><b>Smart Highlights</b> — every hit, strikeout and out, trimmed to the key play</span></label>
-        <label class="check"><input type="checkbox" name="reel" value="top">
-          <span><b>Top</b> <input id="top_n" name="top_n" type="number" min="3" max="30" value="10" aria-label="How many plays"> — only the most exciting plays</span></label>
-        <label class="check"><input type="checkbox" name="reel" value="full">
-          <span><b>Full clips</b> — every highlight clip at full length</span></label>
-        <div class="row">
-          <div>
-            <label for="caption">Caption</label>
-            <select id="caption" name="caption">
-              <option value="always">On for the whole clip</option>
-              <option value="brief">First few seconds only</option>
-            </select>
-          </div>
-          <div>
-            <label for="privacy">Who can watch</label>
-            <select id="privacy" name="privacy">
-              <option value="unlisted">Unlisted — anyone with the link</option>
-              <option value="private">Private — only you</option>
-              <option value="public">Public</option>
-            </select>
-          </div>
+        <div id="name-row" hidden>
+          <label for="typed-name">We couldn't read the player's name. What should the captions say?</label>
+          <input id="typed-name" maxlength="80" autocomplete="off">
         </div>
-      </fieldset>
-
-      <fieldset class="step">
-        <legend><span class="n">4</span>Your GameChanger sign-in</legend>
-        <p class="help">Needed to open the player's clips. It's used for this reel only and is never saved. If GameChanger emails you a sign-in code, you'll enter it here.</p>
-        <div class="row">
-          <div>
-            <label for="gc_email">GameChanger email</label>
-            <input id="gc_email" name="gc_email" type="email" required autocomplete="username">
-          </div>
-          <div>
-            <label for="gc_password">GameChanger password</label>
-            <input id="gc_password" name="gc_password" type="password" required autocomplete="current-password">
-          </div>
-        </div>
-        <label class="check"><input type="checkbox" id="rights" required>
-          <span>I'm allowed to use these videos (my player, my team) and to post them on this channel.</span></label>
-      </fieldset>
-
-      <p class="error" id="form-error" role="alert"></p>
-      <button type="submit" id="submit" class="btn go">Make my highlight reel</button>
-    </form>
+      </div>
+      <div class="step">
+        <h3><span class="n">2</span>Make the reel</h3>
+        <button type="button" id="make" class="btn go" disabled>Make highlight reel</button>
+        <p class="error" id="error" role="alert"></p>
+      </div>
+    </div>
 
     <div id="job" class="job" hidden aria-live="polite">
       <h3 id="job-title">Making your reel</h3>
       <p id="job-stage" class="stage"></p>
       <ol class="track" id="track">
-        <li data-k="Reading the team schedule">Reading the team schedule</li>
-        <li data-k="Signed in to GameChanger">Signing in to GameChanger</li>
-        <li data-k="Finding the player's clips">Finding the player's clips</li>
-        <li data-k="Downloading and cutting clips">Downloading and cutting clips</li>
-        <li data-k="Joining the reel">Joining the reel</li>
-        <li data-k="Uploading to YouTube">Uploading to YouTube</li>
+        <li>Reading the team schedule</li>
+        <li>Finding the player's clips</li>
+        <li>Downloading and cutting clips</li>
+        <li>Joining the reel</li>
       </ol>
-      <form id="code-form" class="code" hidden>
-        <label for="code">GameChanger emailed you a sign-in code. Enter it here:</label>
-        <div class="yt-row"><input id="code" inputmode="numeric" autocomplete="one-time-code" maxlength="12" required>
-        <button class="btn go" type="submit">Send code</button></div>
-      </form>
-      <ul id="results" class="results"></ul>
-      <p class="help" id="job-wait">A full season takes 30–90 minutes. You can close this page and come back with this page's address.</p>
+      <p id="count" class="count" hidden><progress id="bar" value="0" max="1"></progress> <span id="count-text"></span></p>
+      <p class="help" id="job-wait">A full season takes about half an hour. Keep the GameChanger window open while this runs. If it stops, starting again picks up where it left off.</p>
+      <div id="done" class="yt-row" hidden>
+        <button type="button" id="watch" class="btn go">Watch the reel</button>
+        <button type="button" id="show" class="btn ghost">Show in folder</button>
+      </div>
+      <p class="help" id="unsure" hidden></p>
       <details><summary>Show the work log</summary><pre id="log"></pre></details>
       <button type="button" id="again" class="btn ghost" hidden>Make another reel</button>
     </div>
@@ -174,12 +116,12 @@
   <section class="fine">
     <h2>What happens to your information</h2>
     <ul>
-      <li>Your GameChanger password is used for your reel and then discarded. It's never written to disk or logged.</li>
-      <li>The YouTube connection only lets the service upload to the channel you chose, and it's forgotten when your reel is done.</li>
-      <li>Downloaded clips are deleted when the reel is uploaded. Progress pages are removed after 7 days.</li>
-      <li>You need a GameChanger account that can see the player's clips, and the right to post them.</li>
-      <li>Smart Highlights isn't affiliated with or endorsed by GameChanger or YouTube.</li>
+      <li>You sign in on GameChanger's own page. Smart Highlights never sees your password.</li>
+      <li>Your reel and clips stay on your computer. Nothing is uploaded.</li>
+      <li>You need a GameChanger account that can see the player's clips, and the right to use them.</li>
+      <li>Smart Highlights isn't affiliated with or endorsed by GameChanger.</li>
     </ul>
+    <p class="help">Coming next: Top 10 and full-clip reels, and uploading to YouTube.</p>
   </section>
 </main>
 
@@ -187,7 +129,6 @@
   <p>Open source — <a href="https://github.com/christopher-013/smart-highlights">smart-highlights on GitHub</a></p>
 </footer>
 
-<script src="config.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

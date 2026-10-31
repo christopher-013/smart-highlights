@@ -15,8 +15,12 @@ Turns a season of GameChanger clips for one player into YouTube highlight reels.
   - `make_reel.py` - the local prototype's front door (`Make Highlights.bat`): asks questions, saves
     `smart_highlights.json` in the team folder, runs `highlights.py`. `run --local` keeps the reel, `--keep` keeps
     files after uploading, `--limit N` is a trial reel, `check` tests the setup without changing anything.
-- `server/app.py` - FastAPI service: Google OAuth (connect YouTube), jobs (one at a time), emailed-code handoff.
-- `docs/` - GitHub Pages site (static). `docs/config.js` holds the API address (empty = service offline notice).
+- `server/local_app.py` - phase 1 product (`Open Smart Highlights.bat`): serves `docs/` on localhost, opens GameChanger
+  in the engine's Chrome, reads the player from the tab the user reaches, runs `make_reel.py --reel smart --local`.
+  Top N, full clips and YouTube upload are the next milestone for the page.
+- `server/app.py` - parked hosted service: Google OAuth (connect YouTube), jobs (one at a time), emailed-code handoff.
+  It has no page right now.
+- `docs/` - the local app's page; opened anywhere else it says to start the app.
 - `tests/` - `pytest tests` (needs ffmpeg). `tests/fake_engine.py` stands in for the engine in service tests.
 
 ## Locked format (release-v1.0 branch; tag v1.0.0 to be created on GitHub)
@@ -55,5 +59,5 @@ Change only on purpose, and re-validate against real sample clips when you do.
 ## Before public launch
 - GameChanger terms of service (automated access, using visitors' logins) - biggest risk.
 - Google OAuth verification for YouTube scopes; YouTube API quota (~6 uploads/day by default).
-- Pick a host for the service (Christopher's PC with a tunnel, or a small cloud server); set `docs/config.js`;
+- Pick a host for the service (Christopher's PC with a tunnel, or a small cloud server); give it a page again;
   enable Pages from `main` /docs.

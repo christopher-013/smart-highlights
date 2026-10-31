@@ -84,9 +84,17 @@ def signed_in(monkeypatch, tab_url="https://web.gc.com/teams"):
     monkeypatch.setattr(app, "_job", None)
 
 
-def test_never_reloads_the_sign_in_page(monkeypatch):
-    signed_in(monkeypatch, "https://web.gc.com/login")
+@pytest.mark.parametrize("address", ["https://web.gc.com/login", "https://web.gc.com/?redirect=%2Fteams"])
+def test_never_reloads_the_sign_in_page(monkeypatch, address):
+    signed_in(monkeypatch, address)
     monkeypatch.setattr(app, "load_lists", lambda *a, **k: pytest.fail("reloaded a page someone may be typing into"))
+    with client() as c:
+        assert c.get("/api/teams").json() == {"state": "signin"}
+
+
+def test_redirect_to_sign_in_is_noticed_after_loading(monkeypatch):
+    signed_in(monkeypatch)
+    monkeypatch.setattr(app, "load_lists", lambda *a, **k: ("https://web.gc.com/?redirect=%2Fteams", "Welcome", []))
     with client() as c:
         assert c.get("/api/teams").json() == {"state": "signin"}
 
@@ -164,6 +172,40 @@ def test_refuses_other_websites():
         assert c.post("/api/open", headers={"origin": "https://evil.example"}).status_code == 403
     with TestClient(app.app, base_url="http://evil.example") as c:      # a name pointed at this computer
         assert c.get("/api/status").status_code == 403
+
+
+def test_public_site_can_reach_the_app():
+    site = "https://christopher-013.github.io"
+    with client() as c:
+        r = c.get("/api/status", headers={"origin": site})
+        assert r.status_code == 200 and r.headers["access-control-allow-origin"] == site
+        ask = {"origin": site, "access-control-request-method": "POST", "access-control-request-headers": "content-type",
+               "access-control-request-private-network": "true"}
+        r = c.options("/api/reels", headers=ask)
+        assert r.status_code == 200 and r.headers["access-control-allow-private-network"] == "true"
+        r = c.options("/api/reels", headers=dict(ask, origin="https://evil.example"))
+        assert "access-control-allow-origin" not in r.headers and "access-control-allow-private-network" not in r.headers
+        assert c.get("/api/status", headers={"origin": "https://christopher-013.github.io.evil.example"}).status_code == 403
+
+
+def test_stops_by_itself_only_when_nothing_is_happening(monkeypatch):
+    now = app.time.time()
+    later = now + (app.IDLE_MINUTES + 1) * 60
+    monkeypatch.setattr(app, "_last_seen", now)
+    monkeypatch.setattr(app, "_job", None)
+    assert not app.idle(now + 60) and app.idle(later)
+    monkeypatch.setattr(app, "_job", {"status": "running"})
+    assert not app.idle(later)
+
+
+def test_start_command_takes_nothing_from_the_website(tmp_path):
+    from server import install_app
+    python = tmp_path / "python.exe"
+    python.touch()
+    assert "%1" not in install_app.start_command(python)
+    assert install_app.start_command(python).startswith(f'"{python}"') and "--from-site" in install_app.start_command(python)
+    (tmp_path / "pythonw.exe").touch()
+    assert install_app.start_command(python).startswith(f'"{tmp_path / "pythonw.exe"}"')
 
 
 def test_page_is_served_and_asks_for_no_sign_in():

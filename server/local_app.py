@@ -1,7 +1,8 @@
 """
-Smart Highlights on your own computer: the page in docs/ plus the few actions behind it.
+Smart Highlights on your own computer: the few actions behind the page in docs/.
 
-  Open Smart Highlights.bat     starts this and opens the page (double-click it)
+The public site's Start button launches this in the background, once "Set Up Smart Highlights.bat" has been run
+(see install_app.py). It stops by itself when no page has been open for a while and no reel is being made.
 
   POST /api/open        open GameChanger in its own Chrome window, where you sign in
   GET  /api/teams       your teams, once you're signed in
@@ -13,7 +14,8 @@ Smart Highlights on your own computer: the page in docs/ plus the few actions be
 
 You sign in to GameChanger yourself in that Chrome window, and this program never sees the password. The team and
 player lists are what GameChanger's own pages load in that window; nothing else about other people is read or kept.
-It only answers on this computer, and only to its own page: another website can't start a reel from your browser.
+It only answers on this computer, and only to its own page and the public site: another website can't start a reel
+from your browser.
 
 Settings (environment variables):
   SMART_HIGHLIGHTS_HOME   where team folders and the Chrome sign-in are kept (default: "Smart Highlights" in your home folder)
@@ -27,12 +29,14 @@ import subprocess
 import sys
 import threading
 import time
+import traceback
 import urllib.parse
 import urllib.request
 import webbrowser
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -45,11 +49,14 @@ import sh_config  # noqa: E402
 HOME = Path(os.environ.get("SMART_HIGHLIGHTS_HOME") or Path.home() / "Smart Highlights").resolve()
 PORT = int(os.environ.get("SMART_HIGHLIGHTS_PORT", "8765"))
 CDP = "http://127.0.0.1:9222"
+SITE = "https://christopher-013.github.io/smart-highlights/"
+SITES = ("https://christopher-013.github.io", "http://localhost:8080")      # the public site, and a local copy for testing
+IDLE_MINUTES = 30
 GC_WEB = "https://web.gc.com"
 GC_START = GC_WEB + "/teams"
 API = "https://api.team-manager.gc.com"
 TEAMS_RE = re.escape(API) + r"/me/teams"
-SIGN_IN_RE = re.compile(r"web\.gc\.com/(login|sign)", re.I)
+SIGN_IN_RE = re.compile(r"web\.gc\.com/(login|sign|\?redirect=)", re.I)      # signed out, /teams sends you to /?redirect=
 SPORTS = ("softball", "baseball")
 LAST_PLAYER = "last_player.json"
 SEASON_SLUG_RE = re.compile(r"^(\d{4})-(spring|summer|fall|winter)", re.I)
@@ -68,17 +75,33 @@ _teams = None               # the team menu, once it has loaded
 _team_players = {}          # team id -> its player menu
 _signed_out_at = None       # the address that showed a signed-out page: left alone until it changes
 _job = None
+_last_seen = time.time()    # the last time a page asked for anything
 
 
 @app.middleware("http")
 async def only_this_computer(request: Request, call_next):
     """Refuse other websites, including ones pretending to be localhost."""
+    global _last_seen
     host = request.headers.get("host", "").split(":")[0]
-    origin = urllib.parse.urlparse(request.headers.get("origin", "")).hostname
+    origin = request.headers.get("origin", "")
     allowed = ("localhost", "127.0.0.1")
-    if host not in allowed or (origin and origin not in allowed):
+    if host not in allowed or (origin and origin not in SITES and urllib.parse.urlparse(origin).hostname not in allowed):
         return JSONResponse({"detail": "This page only works from your own computer."}, status_code=403)
+    _last_seen = time.time()
     return await call_next(request)
+
+
+app.add_middleware(CORSMiddleware, allow_origins=list(SITES), allow_methods=["GET", "POST"],
+                   allow_headers=["Content-Type"])
+
+
+@app.middleware("http")
+async def allow_public_site(request: Request, call_next):
+    """Chrome also asks before a public site may reach this computer."""
+    response = await call_next(request)
+    if request.headers.get("access-control-request-private-network") and request.headers.get("origin") in SITES:
+        response.headers["Access-Control-Allow-Private-Network"] = "true"
+    return response
 
 
 # ---------------------------------------------------------------- reading the player's page
@@ -266,6 +289,7 @@ def teams_list():
     try:
         url, text, bodies = load_lists(GC_START, TEAMS_RE, "team_public_profile_id")
     except Exception:
+        traceback.print_exc()
         return {"state": "failed"}
     finally:
         _read_lock.release()
@@ -295,6 +319,7 @@ def players_list(team_id: str):
             wanted = rf"{re.escape(API)}/teams/{re.escape(team_id)}/players"
             _, _, bodies = load_lists(f"{GC_WEB}/teams/{team['public_id']}/team", wanted, "/players")
         except Exception:
+            traceback.print_exc()
             raise HTTPException(502, "Couldn't load that team's players. Is the GameChanger window still open?")
         finally:
             _read_lock.release()
@@ -335,7 +360,8 @@ def folder_for(player):
 
 def engine_cmd(player, folder, limit):
     custom = os.environ.get("ENGINE_CMD")
-    start = custom.split() if custom else [sys.executable, "-u", str(ENGINE / "make_reel.py")]
+    python = Path(sys.executable).with_name("python.exe")   # started in the background, this program is pythonw.exe
+    start = custom.split() if custom else [str(python if python.exists() else sys.executable), "-u", str(ENGINE / "make_reel.py")]
     args = ["--folder", str(folder), "--player-url", player["url"], "--player-name", player["name"],
             "--season", player["season"] or time.strftime("%Y"), "--reel", "smart", "--local", "--no-questions"]
     return start + args + (["--limit", str(limit)] if limit else [])
@@ -362,7 +388,8 @@ def make_reel(job, cmd, folder):
     try:
         folder.mkdir(parents=True, exist_ok=True)
         proc = subprocess.Popen(cmd, cwd=str(folder), env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                                stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace", bufsize=1)
+                                stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace", bufsize=1,
+                                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))     # no windows popping up
         for line in proc.stdout:
             if line.strip():
                 read_line(job, line.rstrip())
@@ -457,15 +484,32 @@ def already_running(url):
         return False
 
 
+def idle(now=None):
+    """Nobody has had the page open for a while, and no reel is being made."""
+    return not job_running() and (now or time.time()) - _last_seen > IDLE_MINUTES * 60
+
+
+def stop_when_idle():
+    while not idle():
+        time.sleep(60)
+    os._exit(0)
+
+
 def main():
     url = f"http://localhost:{PORT}"
+    background = "--from-site" in sys.argv
     if already_running(url):
-        webbrowser.open(url)
+        if not background:
+            webbrowser.open(SITE)
         return
+    if background:                              # no window to print to: keep a log instead
+        HOME.mkdir(parents=True, exist_ok=True)
+        sys.stdout = sys.stderr = open(HOME / "app.log", "a", encoding="utf-8", buffering=1)
+    else:
+        threading.Timer(1.0, webbrowser.open, [SITE]).start()
+    threading.Thread(target=stop_when_idle, daemon=True).start()
     import uvicorn
-    print(f"Smart Highlights is running at {url}\nKeep this window open while you use it. Close it when you're done.")
-    threading.Timer(1.0, webbrowser.open, [url]).start()
-    uvicorn.run(app, host="127.0.0.1", port=PORT, log_level="warning")
+    uvicorn.run(app, host="127.0.0.1", port=PORT, log_level="warning", log_config=None)
 
 
 if __name__ == "__main__":

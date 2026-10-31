@@ -1,5 +1,6 @@
 (() => {
   const $ = (id) => document.getElementById(id);
+  const API = location.port === "8765" ? "" : "http://localhost:8765/";             // the app on this computer
   const trial = Number(new URLSearchParams(location.search).get("limit")) || 0;     // ?limit=4 makes a short trial reel
   const ORDER = ["Reading the team schedule", "Finding the player's clips", "Downloading and cutting clips", "Joining the reel"];
   let dismissed = false;
@@ -8,9 +9,10 @@
   let askingTeams = false;
   let pageReady = false;
   let lastPlayer = "";
+  let startHelp = null;
 
   async function post(path, body) {
-    const r = await fetch(path, {
+    const r = await fetch(API + path, {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}),
     });
     if (!r.ok) {
@@ -59,7 +61,7 @@
     updateMake();
     if (!team) return;
     try {
-      const r = await fetch("api/teams/" + encodeURIComponent(team) + "/players");
+      const r = await fetch(API + "api/teams/" + encodeURIComponent(team) + "/players");
       const data = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(typeof data.detail === "string" ? data.detail : "Couldn't load that team's players.");
       if ($("team").value !== team) return;       // a different team was chosen in the meantime
@@ -84,7 +86,7 @@
     if (askingTeams) return;
     askingTeams = true;
     try {
-      const data = await (await fetch("api/teams")).json();
+      const data = await (await fetch(API + "api/teams")).json();
       menus = data.state;
       if (menus === "ready") fillTeams(data.teams, data.last);
     } catch { /* tried again on the next refresh */ }
@@ -156,7 +158,10 @@
   async function refresh() {
     clearTimeout(timer);
     try {
-      const s = await (await fetch("api/status")).json();
+      const s = await (await fetch(API + "api/status")).json();
+      clearTimeout(startHelp);
+      $("starting").textContent = "";
+      $("first-time").hidden = true;
       $("offline").hidden = true;
       $("maker").hidden = false;
       if (s.job && !(dismissed && s.job.status !== "running")) showJob(s.job);
@@ -168,6 +173,12 @@
     }
     timer = setTimeout(refresh, 2000);
   }
+
+  $("launch").addEventListener("click", () => {
+    $("starting").textContent = "Starting… If your browser asks, choose Open.";
+    clearTimeout(startHelp);
+    startHelp = setTimeout(() => { $("starting").textContent = ""; $("first-time").hidden = false; }, 10000);
+  });
 
   $("open").addEventListener("click", async () => {
     $("error").textContent = "";

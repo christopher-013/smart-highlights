@@ -33,11 +33,16 @@ py -3.12 -m venv .venv
 .venv\Scripts\python.exe -m pip install -r server\requirements.txt
 ```
 
-Then double-click **Open Smart Highlights.bat** and, on the page that opens:
+Or double-click **Set Up Smart Highlights.bat**, which does that for you. It also teaches Windows what the public
+site's Start button means, so you only need it once (`server\install_app.py --remove` undoes that). After that, use
+the site at https://christopher-013.github.io/smart-highlights/ :
 
-1. Click **Open GameChanger**, and sign in if it asks.
-2. Come back to the page and choose your team and player from the menus. Your last choice is already picked.
-3. Click **Make highlight reel**.
+1. Click **Start Smart Highlights**. The first time, your browser asks to open it, and Chrome may ask to reach your
+   local network: allow both. The program runs in the background with no window and stops by itself after 30 idle
+   minutes. Its log is `app.log` in the `Smart Highlights` folder.
+2. Click **Open GameChanger**, and sign in if it asks.
+3. Come back to the page and choose your team and player from the menus. Your last choice is already picked.
+4. Click **Make highlight reel**.
 
 The Smart Highlights reel stays on this computer, in `Smart Highlights\<team>\highlights\<Player>_quick\` in your
 home folder. Set `SMART_HIGHLIGHTS_HOME` to keep it somewhere else. Adding `?limit=4` to the page's address makes a

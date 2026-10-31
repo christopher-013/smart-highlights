@@ -66,6 +66,9 @@ h3 { font-weight: 700; font-size: 1.45rem; margin-bottom: .4rem; }
   font: 600 clamp(.62rem, 1.45vw, .95rem)/1.25 var(--body); }
 
 .notice { border-left: 6px solid var(--optic); background: var(--paper); padding: 16px 20px; margin-bottom: 32px; max-width: 760px; }
+.notice .btn { display: inline-block; text-decoration: none; }
+.notice .status, .notice .help { margin-top: 12px; }
+.start-text { margin: 0 0 14px; }
 
 /* the maker */
 .maker { background: var(--paper); border: 1px solid var(--line); border-radius: 6px; padding: 36px clamp(20px, 4vw, 48px); max-width: 860px; }

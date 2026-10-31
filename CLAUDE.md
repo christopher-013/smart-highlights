@@ -15,9 +15,11 @@ Turns a season of GameChanger clips for one player into YouTube highlight reels.
   - `make_reel.py` - the local prototype's front door (`Make Highlights.bat`): asks questions, saves
     `smart_highlights.json` in the team folder, runs `highlights.py`. `run --local` keeps the reel, `--keep` keeps
     files after uploading, `--limit N` is a trial reel, `check` tests the setup without changing anything.
-- `server/local_app.py` - phase 1 product (`Open Smart Highlights.bat`): serves `docs/` on localhost, opens GameChanger
-  in the engine's Chrome, reads the player from the tab the user reaches, runs `make_reel.py --reel smart --local`.
+- `server/local_app.py` - phase 1 product: the public site calls it at localhost:8765. It opens GameChanger in the
+  engine's Chrome, builds the team and player menus from what those pages load, runs `make_reel.py --reel smart --local`.
   Top N, full clips and YouTube upload are the next milestone for the page.
+- `server/install_app.py` (`Set Up Smart Highlights.bat`) - one-time setup: registers `smart-highlights://` so the
+  site's Start button launches the app with no window. A browser can't start anything without this.
 - `server/app.py` - parked hosted service: Google OAuth (connect YouTube), jobs (one at a time), emailed-code handoff.
   It has no page right now.
 - `docs/` - the local app's page; opened anywhere else it says to start the app.
